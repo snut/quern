@@ -15,6 +15,8 @@ The `Quern` library (found under the `src/` directory) provides a thin wrapper a
 The `Slime` executable project (found under the `slime/` directory) uses `Quern` to render the WIP game. It handles board generation, configures the assets used to represent slimes, items and obstacles, mediates communication between the turn-based game thread and the realtime render/audio thread, and has some utilities for hex grids.
 
 
+![A screenshot of the slime game](/images/screenshot.jpg)
+
 ## Building and running
 To build the game with a working installation of `stack`:
 
