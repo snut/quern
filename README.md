@@ -39,7 +39,9 @@ The options flags are provided after a leading double-dash (disambiguating them 
 3. `-a` / `--audio` : start the audio subsystem, this defaults to off as it is underdeveloped
 
 ### Debug keybinds in game
-`P` - toggle debug camera, click and drag mouse to look around, WASDQE to move
-`R` - randomise and reset test board
-`LMB` - select a unit (friendly or otherwise), or order a friendly unit to move to a hex/attack an enemy
-`RMB` - clone the selected unit into hovered adjacent space
+- `P` - toggle debug camera, click and drag mouse to look around, WASDQE to move
+- `R` - randomise and reset test board
+- `LMB` - select a unit (friendly or otherwise), or order a friendly unit to move to a hex/attack an enemy
+- `RMB` - clone the selected unit into hovered adjacent space
+
+![An animation showing a slime attacking](/images/attack_anim.gif)
