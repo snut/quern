@@ -1,0 +1,13 @@
+.stack-work/
+.pijul/
+.hg/
+.stuff/
+.experiments/
+progress/
+refs/
+src-data/
+quern.cabal
+stack.yaml.lock
+*~
+.hgignore
+.pijulignore

@@ -1,0 +1,245 @@
+layout(local_size_x=32, local_size_y=32, local_size_z=1) in;
+
+// based on nVidia's implementation of Horizon Based AO
+// todo: find a non-expired link to the original sample
+const float pi = 3.14159265;
+
+#ifdef MULTISAMPLE
+layout(location = 0, binding=0) uniform sampler2DMS sceneDepth;
+#else
+layout(location = 0, binding=0) uniform sampler2D sceneDepth;
+#endif
+
+layout(rg16f, binding = 1) coherent restrict uniform image2D destination;
+
+layout(location = 1) uniform mat4 projection;
+layout(location = 2) uniform mat4 inverseProjection;
+layout(location = 17) uniform vec2 zNearFar = vec2(0.01, 100);
+// convert a value in clip space [-1..1] to a view-space position at 1 unit z
+layout(location = 18) uniform vec2 clipToView;
+
+
+vec2 rcpRes = vec2(1920.0, 1080.0);
+vec2 aoRes = vec2(1.0/1920.0, 1.0/1080.0);
+
+float linearDepth(float  ndcZ) {
+#if 1
+  // reversed z
+  float z = ndcZ;
+  float near = zNearFar.x;
+  float far = zNearFar.y;
+  if (far <= 0) {
+    return near / (near + z);
+  }
+  return (far*near) / (near + z * (far - near));
+#else
+  // conventional z
+  float z = ndcZ * 2 - 1;
+  float near = zNearFar.x;
+  float far = zNearFar.y;
+  return 2 * near * far / (far + near - z * (far - near));
+#endif
+}
+
+// from https://www.shadertoy.com/view/4tXyWN
+// The MIT License
+// Copyright © 2017 Inigo Quilez
+float iqHash(uvec2 x) {
+  uvec2 q = 1103515245U * ( (x>>1U) ^ (x.yx   ) );
+  uint  n = 1103515245U * ( (q.x  ) ^ (q.y>>3U) );
+  return float(n) * (1.0/float(0xffffffffU));
+}
+
+float getRawDepth(ivec2 texel) {
+#ifdef MULTISAMPLE
+  float raw0 = texelFetch(sceneDepth, texel, 0).x;
+  float raw1 = texelFetch(sceneDepth, texel, 1).x;
+  return min(raw0, raw1);
+#else
+  return texelFetch(sceneDepth, texel, 0).x;
+  //return textureLod(sceneDepth, uv, 0).x;
+#endif
+}
+
+float getDepth(ivec2 texel, vec2 uv) {
+#ifdef MULTISAMPLE
+  float raw0 = texelFetch(sceneDepth, texel, 0).x;
+  float raw1 = texelFetch(sceneDepth, texel, 1).x;
+  return linearDepth(min(raw0, raw1));
+#else
+  return linearDepth(textureLod(sceneDepth, uv, 0).x);
+#endif
+}
+
+vec3 getSeed(ivec2 texel) {
+  uvec2 utex = uvec2(texel);
+  vec2 rg = vec2(iqHash(utex), iqHash(utex+(1920u*1080u*4u))) * 2.0 - 1.0;
+  return normalize(vec3(rg.xy, 0.7));
+}
+
+vec3 uvToCamera(vec2 uv, float z) {
+  vec2 clip = uv * 2.0 - 1.0;
+  float aspect = aoRes.x * rcpRes.y;
+  clip *= vec2(1, 1/aspect);
+  return vec3(clip*clipToView.xx*z, z);
+}
+
+vec3 pointToCamera(ivec2 texel) {
+  vec2 uv = vec2(texel) * rcpRes;
+  float z = getRawDepth(texel);
+  return uvToCamera(uv, z);
+}
+
+const float tangentBias = 0.57735; // tan 30 degrees
+const float r = 0.25;
+const float r2 = r*r;
+const float negRcpR2 = -1.0 / r2;
+const float maxRadiusPx = 32;
+const int directionCount = 6;
+const int sampleCount = 4;
+const float aoStrength = 1.9;
+
+float tanToSin(float x) { return x * inversesqrt(x*x + 1.0); }
+float rcpLen(vec2 x) { return inversesqrt(dot(x,x)); }
+float biasedTan(vec3 x) { return x.z * rcpLen(x.xy) + tangentBias; }
+float lenSq(vec3 x) { return dot(x,x); }
+float falloff(float d2) {
+  return d2 * negRcpR2 + 1.0;
+}
+vec3 minDiff(vec3 p0, vec3 p1, vec3 p2) {
+  vec3 d1 = p1 - p0;
+  vec3 d2 = p0 - p2;
+  return (lenSq(d1) < lenSq(d2)) ? d1 : d2;
+}
+float tangent(vec3 p, vec3 s) {
+  vec3 d = s - p;
+  return d.z * rcpLen(d.xy);
+}
+
+float horizon(ivec2 texel0, vec2 uv0, vec2 deltaUV, vec3 p, vec3 dpdu, vec3 dpdv, float rand, int samples) {
+  // offset with noise
+  ivec2 idelta = ivec2(round(deltaUV * aoRes));
+  ivec2 ideltaR = ivec2(round(deltaUV * rand * aoRes));
+  vec2 uv = uv0 + (vec2(ideltaR) * rcpRes);
+  ivec2 texel = texel0 + ideltaR;
+  deltaUV = round(deltaUV * aoRes) * rcpRes;
+  // tangent vector
+  vec3 t = deltaUV.x * dpdu + deltaUV.y * dpdv;
+  // angles
+  float tanH = biasedTan(t);
+  float sinH = tanToSin(tanH);
+
+  float ao = 0;
+  for (int i = 1; i <= samples; ++i) {
+    uv += deltaUV;
+    texel += idelta;
+    vec3 s = pointToCamera(texel);
+    float tanS = tangent(p, s);
+    float d2 = lenSq(s - p);
+    // is sample within radius
+    if (d2 < r2 && tanS > tanH) {
+      float sinS = tanToSin(tanS);
+      // distance falloff
+      ao += falloff(d2) * (sinS - sinH);
+      tanH = tanS;
+      sinH = sinS;
+    }
+  }
+  return ao;
+}
+
+vec2 rotate(vec2 dir, vec2 cos_sin) {
+  return vec2(
+    dir.x * cos_sin.x - dir.y * cos_sin.y,
+    dir.x * cos_sin.y + dir.y * cos_sin.x);
+}
+
+void calcSteps(inout vec2 stepUV, inout int steps, float rayRadiusPx, float rand) {
+  // oversampling prevention
+  steps = min(sampleCount, int(rayRadiusPx));
+  // keep less than radius (attenuation to zero there)
+  float stepPx = rayRadiusPx / float(steps+1);
+  float maxSteps = maxRadiusPx / stepPx;
+  // clamp steps if greater than max kernel footprint
+  if (maxSteps < steps) {
+    steps = max(int(maxSteps+rand), 1);
+    stepPx = maxRadiusPx / float(steps);
+  }
+  stepUV = stepPx * rcpRes;
+}
+
+
+const float gauss1D_5[5] = {0.027, 0.233, 0.479, 0.233, 0.027};
+const float gauss1D_11[11] = {0.005, 0.02, 0.06, 0.12, 0.19, 0.22, 0.19, 0.12, 0.06, 0.02, 0.005};
+
+// cross bilateral filter
+// 'separable' depth-dependent blur... ish
+void blur(ivec2 texel, float refZ, ivec2 dir) {
+  float sum = 0;
+  float wgt = 0;
+  float rcpRefZ = 1.0 / refZ;
+  for (int i = 0; i < 11; ++i) {
+    int o = i - 5;
+    vec2 px = imageLoad(destination, texel + (dir * o)).xy;
+    float w = gauss1D_11[i] * (1.0 - clamp( abs(px.y-refZ) * 100.0 * rcpRefZ, 0.0, 1.0 ));
+    sum += px.x * w;
+    wgt += w;
+  }
+  sum /= max(0.0001, wgt);
+  imageStore(destination, texel, vec4(sum, refZ, 0.0, 0.0));
+}
+
+
+void main() {
+  ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+  aoRes = vec2(imageSize(destination));
+  rcpRes = 1.0 / aoRes;
+  vec2 uv = vec2(texel) * rcpRes;
+  vec3 px = vec3(rcpRes, 0);
+  vec3 p = pointToCamera(texel);
+  vec3 pr = pointToCamera(texel + ivec2(1,0));
+  vec3 pl = pointToCamera(texel - ivec2(1,0));
+  vec3 pt = pointToCamera(texel + ivec2(0,1));
+  vec3 pb = pointToCamera(texel - ivec2(0,1));
+
+  float rcpAspect = (aoRes.y * rcpRes.x);
+  vec3 dpdu = minDiff(p, pr, pl);
+  vec3 dpdv = minDiff(p, pt, pb) * rcpAspect;
+
+  vec3 random = vec3(iqHash(texel), iqHash(texel+5000), iqHash(texel+9000));
+
+  vec4 rPrj = projection * vec4(r, 0, linearDepth(p.z), 1);
+  rPrj /= rPrj.w;
+  float radiusUv = abs(rPrj.x);
+  float radiusPx = radiusUv * aoRes.x;
+
+  float ao = 1;
+  if (radiusPx > 1) {
+    ao = 0.0;
+    int steps = 1;
+    vec2 stepUv = rcpRes;
+    float thetaStep = 2.0 * pi / float(directionCount);
+    calcSteps(stepUv, steps, radiusPx, random.z);
+    for (int d = 0; d < directionCount; ++d) {
+      float theta = thetaStep * float(d);
+      vec2 dir = vec2(cos(theta), sin(theta));
+      vec2 cs = vec2(cos(random.y*pi*2), sin(random.y*pi*2));
+      dir = rotate(dir, cs);
+      vec2 deltaUv = dir * stepUv;
+      ao += horizon(texel, uv, deltaUv, p, dpdu, dpdv, random.x, steps);
+    }
+
+    // average
+		ao = 1.0 - ao / float(directionCount) * aoStrength;
+  }
+
+  float refZ = linearDepth(p.z);
+  imageStore(destination, texel, vec4(clamp(ao, 0, 1), refZ, 0, 0));
+
+  // this might be horrendously bad for gpr & thread usage,
+  // but it is very convenient and avoids more shaders/dispatching
+  memoryBarrierImage();
+  blur(texel, refZ, ivec2(1,0));
+  memoryBarrierImage();
+  blur(texel, refZ, ivec2(0,1));
+}

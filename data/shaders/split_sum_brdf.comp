@@ -1,0 +1,96 @@
+
+float saturate(float x) { return clamp(x, 0.0, 1.0); }
+const float pi = 3.14159;
+// based on Unreal siggraph presentation c. 2013
+
+layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
+
+float specG1(float n_v, float k) {
+  return n_v / (n_v * (1.0 - k) + k);
+}
+
+float specG(bool analytic, float n_v, float n_l, float roughness) {
+  float dehot = roughness + 1.0;
+  float k_anl = (dehot * dehot) * 0.25;
+  float k_ibl = (roughness * roughness);
+  float k = analytic ?  k_anl : k_ibl;
+  return specG1(n_l, k) * specG1(n_v, k);
+}
+
+float schlick(float v) {
+#if 0
+  v = 1.0 - v;
+  float v2 = v * v;
+  return v2 * v2 * v;
+#elif 1
+  return pow( 1.0 - v, 5 );
+#else // unreal approximation using a spherical gaussian expansion
+  return pow(2, (-5.55473 * v - 6.98316) * v);
+#endif
+}
+
+vec3 importanceSample( vec2 xi, float roughness, mat3 tbn ) {
+  float a = roughness * roughness;
+  float phi = 2 * pi * xi.x;
+  float cphi = cos(phi);
+  float sphi = sin(phi);
+  float ctheta = sqrt( (1-xi.y) / (1 + (a*a-1) * xi.y) );
+  float stheta = sqrt( 1 - ctheta * ctheta );
+  vec3 d = vec3(stheta * cphi, stheta * sphi, ctheta);
+  return tbn * d;
+}
+
+float radicalInverse_VdC(uint bits) {
+  bits = (bits << 16u) | (bits >> 16u);
+  bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+  bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+  bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+  bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+  return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+
+vec2 hammersley2d(uint i, uint N) {
+  return vec2(float(i)/float(N), radicalInverse_VdC(i));
+}
+
+vec2 integrate(float roughness, float n_v) {
+  n_v = saturate(n_v);
+  vec3 v = vec3( sqrt(1.0 - n_v*n_v), 0.0, n_v );
+
+  vec2 ab = vec2(0.0, 0.0);
+
+  mat3 m = { {1,0,0}, {0,1,0}, {0,0,1} };
+
+  vec4 sum = vec4(0);
+  const uint samples = 1024;
+  for (uint i = 0; i < samples; ++i) {
+    vec2 xi = hammersley2d(i, samples);
+    vec3 h = importanceSample(xi, roughness, m);
+    vec3 l = 2 * dot(v,h) * h - v;
+
+    float n_l = saturate(l.z);
+    float n_h = saturate(h.z);
+    float v_h = saturate(dot(v,h));
+
+    if (n_l > 0) {
+      float g = specG(false, n_v, n_l, roughness);
+      float g_vis = g * v_h / (n_h * n_v);
+      float f = schlick( v_h );
+      ab.x += (1 - f) * g_vis;
+      ab.y += f * g_vis;
+    }
+
+  }
+
+  return ab / float(samples);
+}
+
+layout(rg16, binding = 0) writeonly uniform image2D lut;
+void main() {
+  uvec2 lutSize = imageSize(lut);
+  float roughness = float(gl_GlobalInvocationID.x) / float(lutSize.x-1);
+  float n_v       = float(gl_GlobalInvocationID.y) / float(lutSize.y-1);
+
+  vec2 ab = integrate(roughness, n_v);
+  imageStore(lut, ivec2(gl_GlobalInvocationID.xy), vec4(ab,0,0));
+}

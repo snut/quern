@@ -1,0 +1,257 @@
+/* WIP: Not used yet */
+layout(local_size_x=32, local_size_y=32, local_size_z=1) in;
+
+#ifdef MULTISAMPLE
+layout(location = 0, binding=0) uniform sampler2DMS sceneDepth;
+#else
+layout(location = 0, binding=0) uniform sampler2D sceneDepth;
+#endif
+
+layout(rg16f, binding = 1) coherent restrict uniform image2D destination;
+
+
+//layout(rg8, binding = 1) readonly uniform image2D randomNoise;
+
+layout(location = 1) uniform mat4 projection;
+layout(location = 2) uniform mat4 inverseProjection;
+layout(location = 17) uniform vec2 zNearFar = vec2(0.01, 100);
+// convert a value in clip space [-1..1] to a view-space position at 1 unit z
+layout(location = 18) uniform vec2 clipToView;
+
+float linearDepth(float  ndcZ) {
+#if 1
+    // reversed z
+    float z = ndcZ;
+    float near = zNearFar.x;
+    float far = zNearFar.y;
+    if (far <= 0) {
+      return near / (near + z);
+    }
+    return (far*near) / (near + z * (far - near));
+#else
+    // conventional z
+  float z = ndcZ * 2 - 1;
+  float near = zNearFar.x;
+  float far = zNearFar.y;
+  return 2 * near * far / (far + near - z * (far - near));
+#endif
+}
+
+// from https://www.shadertoy.com/view/4tXyWN
+// The MIT License
+// Copyright © 2017 Inigo Quilez
+float iqHash(uvec2 x) {
+  uvec2 q = 1103515245U * ( (x>>1U) ^ (x.yx   ) );
+  uint  n = 1103515245U * ( (q.x  ) ^ (q.y>>3U) );
+  return float(n) * (1.0/float(0xffffffffU));
+}
+
+float getRawDepth(ivec2 texel, vec2 uv) {
+#ifdef MULTISAMPLE
+  float raw0 = texelFetch(sceneDepth, texel, 0).x;
+  float raw1 = texelFetch(sceneDepth, texel, 1).x;
+  return min(raw0, raw1);
+#else
+  return textureLod(sceneDepth, uv, 0).x;
+#endif
+}
+
+float getDepth(ivec2 texel, vec2 uv) {
+#ifdef MULTISAMPLE
+  float raw0 = texelFetch(sceneDepth, texel, 0).x;
+  float raw1 = texelFetch(sceneDepth, texel, 1).x;
+  return linearDepth(min(raw0, raw1));
+#else
+  return linearDepth(textureLod(sceneDepth, uv, 0).x);
+#endif
+}
+
+vec3 getSeed(ivec2 texel) {
+  //float signz = ((texel.x&0x80)^(texel.y&0x80)) == 0 ? 1.0 : -1.0;
+  //ivec2 clmp = ivec2(texel.x & 0x7f, texel.y & 0x7f);
+  //vec2 rg = imageLoad(randomNoise, clmp).xy * 2.0 - 1.0;
+  uvec2 utex = uvec2(texel);
+  vec2 rg = vec2(iqHash(utex), iqHash(utex+(1920u*1080u))) * 2.0 - 1.0;
+  return normalize(vec3(rg.xy, 0.7));
+}
+// random
+#define NUM_POINTS_R 32
+const vec3 points_r[NUM_POINTS_R] = {
+    vec3(0.1145,-0.6666,-0.6666)
+  , vec3(-0.3540,0.6488,0.6488)
+  , vec3(0.2416,0.1313,0.1313)
+  , vec3(0.3951,0.2177,0.2177)
+  , vec3(0.4214,0.3309,0.3309)
+  , vec3(-0.6787,-0.3272,-0.3272)
+  , vec3(0.0624,-0.5965,-0.5965)
+  , vec3(-0.8500,-0.2806,-0.2806)
+  , vec3(0.5603,-0.3623,-0.3623)
+  , vec3(0.4820,-0.0272,-0.0272)
+  , vec3(0.3163,0.5660,0.5660)
+  , vec3(0.8551,-0.2043,-0.2043)
+  , vec3(0.5345,0.3764,0.3764)
+  , vec3(0.0499,0.3956,0.3956)
+  , vec3(-0.7823,-0.3051,-0.3051)
+  , vec3(-0.4350,-0.2927,-0.2927)
+  , vec3(0.7902,-0.2806,-0.2806)
+  , vec3(0.7566,0.3476,0.3476)
+  , vec3(-0.3010,-0.6369,-0.6369)
+  , vec3(-0.3107,-0.1353,-0.1353)
+  , vec3(-0.0702,-0.5419,-0.5419)
+  , vec3(-0.6651,0.0056,0.0056)
+  , vec3(-0.2446,-0.1120,-0.1120)
+  , vec3(0.9750,-0.1336,-0.1336)
+  , vec3(0.1748,0.6006,0.6006)
+  , vec3(-0.3221,-0.5301,-0.5301)
+  , vec3(0.5043,0.0391,0.0391)
+  , vec3(-0.2491,0.2735,0.2735)
+  , vec3(-0.1032,0.4445,0.4445)
+  , vec3(0.9386,-0.1066,-0.1066)
+  , vec3(0.4822,-0.3870,-0.3870)
+  , vec3(-0.0096,-0.4885,-0.4885)
+};
+
+// icosahedral basis
+#define NUM_POINTS_ICO 12
+const vec3 points_ico[NUM_POINTS_ICO] = {
+    vec3( 0.000000, 0.000000, -1.000000)
+  , vec3( -0.525720, -0.723600, -0.447215)
+  , vec3( -0.850640, 0.276385, -0.447215)
+  , vec3( 0.000000, 0.894425, -0.447215)
+  , vec3( 0.850640, 0.276385, -0.447215)
+  , vec3( 0.525720, -0.723600, -0.447215)
+  , vec3( -0.850640, -0.276385, 0.447215)
+  , vec3( -0.525720, 0.723600, 0.447215)
+  , vec3( 0.525720, 0.723600, 0.447215)
+  , vec3( 0.850640, -0.276385, 0.447215)
+  , vec3( 0.000000, -0.894425, 0.447215)
+  , vec3( 0.000000, 0.000000, 1.000000)
+};
+
+// subdivided icosahedral
+#define NUM_POINTS_ICO_SUB 42
+const vec3 points_ico_sub[NUM_POINTS_ICO_SUB] = {
+  vec3( 0.000000, 0.000000, -1.000000),
+  vec3( -0.525725, -0.723607, -0.447220),
+  vec3( -0.850649, 0.276388, -0.447220),
+  vec3( 0.000000, 0.894426, -0.447216),
+  vec3( 0.850649, 0.276388, -0.447220),
+  vec3( 0.525725, -0.723607, -0.447220),
+  vec3( -0.850649, -0.276388, 0.447220),
+  vec3( -0.525725, 0.723607, 0.447220),
+  vec3( 0.525725, 0.723607, 0.447220),
+  vec3( 0.850649, -0.276388, 0.447220),
+  vec3( 0.000000, -0.894426, 0.447216),
+  vec3( 0.000000, 0.000000, 1.000000),
+  vec3( -0.499995, 0.162456, -0.850654),
+  vec3( -0.309011, -0.425323, -0.850654),
+  vec3( -0.809012, -0.262869, -0.525738),
+  vec3( 0.000000, -0.850648, -0.525736),
+  vec3( 0.309011, -0.425323, -0.850654),
+  vec3( 0.000000, 0.525730, -0.850652),
+  vec3( -0.499997, 0.688189, -0.525736),
+  vec3( 0.499995, 0.162456, -0.850654),
+  vec3( 0.499997, 0.688189, -0.525736),
+  vec3( 0.809012, -0.262869, -0.525738),
+  vec3( -0.309013, -0.951058, 0.000000),
+  vec3( 0.309013, -0.951058, 0.000000),
+  vec3( -1.000000, 0.000000, 0.000000),
+  vec3( -0.809017, -0.587786, 0.000000),
+  vec3( -0.309013, 0.951058, 0.000000),
+  vec3( -0.809017, 0.587786, 0.000000),
+  vec3( 0.809017, 0.587786, 0.000000),
+  vec3( 0.309013, 0.951058, 0.000000),
+  vec3( 0.809017, -0.587786, 0.000000),
+  vec3( 1.000000, 0.000000, 0.000000),
+  vec3( -0.499997, -0.688189, 0.525736),
+  vec3( -0.809012, 0.262869, 0.525738),
+  vec3( 0.000000, 0.850648, 0.525736),
+  vec3( 0.809012, 0.262869, 0.525738),
+  vec3( 0.499997, -0.688189, 0.525736),
+  vec3( -0.499995, -0.162456, 0.850654),
+  vec3( 0.000000, -0.525730, 0.850652),
+  vec3( -0.309011, 0.425323, 0.850654),
+  vec3( 0.309011, 0.425323, 0.850654),
+  vec3( 0.499995, -0.162456, 0.850654)
+};
+
+#define NUM_POINTS NUM_POINTS_ICO
+#define POINTS points_ico
+
+const float gauss1D_5[5] = {0.027, 0.233, 0.479, 0.233, 0.027};
+const float gauss1D_11[11] = {0.005, 0.02, 0.06, 0.12, 0.19, 0.22, 0.19, 0.12, 0.06, 0.02, 0.005};
+
+// cross bilateral filter
+// 'separable' depth-dependent blur... ish
+void blur(ivec2 texel, float refZ, ivec2 dir) {
+  float sum = 0;
+  float wgt = 0;
+  float rcpRefZ = 1.0 / refZ;
+  for (int i = 0; i < 11; ++i) {
+    int o = i - 5;
+    vec2 px = imageLoad(destination, texel + (dir * o)).xy;
+    float w = gauss1D_11[i] * (1.0 - clamp( abs(px.y-refZ) * 100.0 * rcpRefZ, 0.0, 1.0 ));
+    sum += px.x * w;
+    wgt += w;
+  }
+  sum /= max(0.0001, wgt);
+  imageStore(destination, texel, vec4(sum, refZ, 0.0, 0.0));
+}
+
+
+float visTest(vec3 p, vec3 seed, float radius, vec3 wrld, ivec2 srcSize) {
+  p -= seed.xyz * (2.0 * dot(seed, p));
+  vec3 rayWrld = p * radius + wrld.xyz;
+
+  //vec4 ndc_ = projection * vec4(wrld_, 1.0);
+  vec4 rayNdc = vec4(rayWrld, 1.0) * transpose(projection);
+  float rayZ = rayWrld.z;//linearDepth(rayNdc.z);
+  vec2 rayUV = rayNdc.xy / rayNdc.w;
+  rayUV.xy = rayUV.xy * -0.5 + 0.5;
+  float sampleZ = getDepth(ivec2(rayUV.xy*srcSize), rayUV.xy);
+
+  float deltaZ = rayZ - sampleZ;
+  float visAmnt = deltaZ < radius*3 ? 1 : 0.5;
+  return rayZ > sampleZ && deltaZ < (radius*3) ? 0 : visAmnt;
+}
+
+void main() {
+  ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 dstSize = imageSize(destination);
+  ivec2 srcSize = dstSize;//imageSize(sceneDepth);
+  vec2 uv = vec2(texel) / vec2(dstSize);
+
+  ivec2 srcTexel = ivec2(uv * vec2(srcSize));
+  float refNdcZ = getRawDepth(srcTexel, uv);
+  float refZ = linearDepth(refNdcZ);
+  //float refZ = getDepth(srcTexel, uv);
+  vec3 ndc = vec3((uv * 2.0 - 1.0) * vec2(2,2*(16.0/9.0)) * clipToView.xy * refZ, refZ);// * refZ;
+
+  vec4 wrld = vec4(ndc, 1.0) * inverseProjection;
+  wrld.z = refZ;
+  float radius = 0.25; //0.05 * refZ;
+  vec3 seed = getSeed(texel);
+  vec3 seed2 = getSeed(texel + ivec2(1920,1080));
+
+  float vis = 0;
+  for (int i = 0; i < NUM_POINTS; ++i) {
+    vec3 p = POINTS[i];
+
+    vis += visTest(p, seed, radius, wrld.xyz, srcSize) * 0.5;
+    vis += visTest(p, seed2, radius*4, wrld.xyz, srcSize) * 0.5;
+
+    //float zDelta = 32.0 * max(rayZ - sampleZ, 0.0);
+    //vis += 1.0 / (1.0 + zDelta*zDelta);
+  }
+  vis /= float(NUM_POINTS);
+  vis *= 2.5;
+  vis -= 0.25;
+
+  //vis = clamp(vis * 2.1 / float(NUM_POINTS), 0, 1);
+  imageStore(destination, texel, vec4(vis,refZ,0,0));
+
+  memoryBarrierImage();
+  blur(texel, refZ, ivec2(1,0));
+  memoryBarrierImage();
+  blur(texel, refZ, ivec2(0,1));
+}

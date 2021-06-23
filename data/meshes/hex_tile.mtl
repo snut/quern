@@ -1,0 +1,12 @@
+# Blender MTL File: 'hex_tile.blend'
+# Material Count: 1
+
+newmtl grassy
+Ns 0.473444
+Ka 1.000000 1.000000 1.000000
+Kd 0.110721 0.185497 0.054661
+Ks 0.500000 0.500000 0.500000
+Ke 0.0 0.0 0.0
+Ni 1.450000
+d 1.000000
+illum 2

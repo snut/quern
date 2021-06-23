@@ -1,0 +1,117 @@
+name:                quern
+version:             0.1.0.0
+github:              "snut/quern"
+license:             BSD3
+author:              "Daniel Watts"
+maintainer:          "snutters@gmail.com"
+copyright:           "2021 Daniel Watts"
+
+extra-source-files:
+- README.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/snut/quern#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+- aeson
+- attoparsec
+- bytestring
+- comonad
+- containers
+- data-fix
+- deepseq
+- directory
+- filepath
+- free
+- GenericPretty # for debug pretty printing
+- gl
+# sdl2 incurs a dependency on the OpenGL package, which depends on OpenGLRaw
+# it's a little weird to have two independant versions of OpenGL wrappers in the deps
+# but I kind of prefer `gl` ergonomically
+- half
+- hashable
+- JuicyPixels
+- lens
+#- microlens-mtl # microlens-platform &co only shave about 60kb off a 60mb exe
+#- microlens-platform # at least without other optimisations/changes, not worth it
+- linear
+- mmap
+- mtl
+- parsec
+- persist
+- pure-zlib # used for FBX decoding
+- random
+- recursion-schemes
+# Windows note for SDL2 installation:
+# We have so much fun here
+# stack exec -- pacman -S mingw-w64-x86_64-pkg-config mingw-w64-x86_64-SDL2 mingw-w64-x86_64-SDL2_mixer
+- sdl2
+- sdl2-mixer
+- StateVar
+- stm
+- text
+- time
+- transformers
+- unordered-containers
+- vector
+- vector-algorithms
+
+library:
+  source-dirs: src
+  ghc-options:
+  - -Wall
+  - -Wincomplete-uni-patterns
+  - -Wincomplete-record-updates
+  - -Wcompat
+  - -Widentities
+  - -Wpartial-fields
+  - -Wredundant-constraints
+
+executables:
+  slime:
+    main: Main.hs
+    source-dirs: slime
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    - -with-rtsopts=-T
+    - -O2
+    - -funbox-strict-fields
+    dependencies:
+    - quern
+    - optparse-applicative
+
+tests:
+  quern-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - quern
+    - linear
+    - hedgehog
+benchmarks:
+  quern-bench:
+    main: Bench.hs
+    source-dirs: bench
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    - -O2
+    - -funbox-strict-fields
+    dependencies:
+    - quern
+    - criterion
+    - vector

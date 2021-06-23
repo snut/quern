@@ -1,0 +1,5 @@
+Test environments from:
+ https://hdrihaven.com/hdris
+
+
+License: CC0

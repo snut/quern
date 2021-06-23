@@ -1,0 +1,273 @@
+
+// basic idea:
+// large buffer containing all the shapes used in GUI rendering
+// first compute kernal assigns a subset of these to tiles (workgroups)
+//  consider: also maybe does hierarchy transforms/alignment? z-sort? interesting
+// this kernal writes alpha-blended image (or directly to render target image?)
+
+// to start with, skip the first step and make everything render everywhere
+
+
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+
+struct packed_shape {
+  vec4 transform_flags; // position, rotation, uint32 flags
+  vec4 shape_data; // line: vec2*2, circle: float radius, box: vec2 size
+  vec4 colour_modifiers;  // rgba8 colour; float roundingradius (-ve: annular); unused/unused
+};
+
+layout(location=1) uniform uint shape_count;
+
+layout(rgba8, binding=0) writeonly uniform image2D gui_plane;
+
+layout(std430, binding=1) readonly buffer shapes_ {
+  packed_shape shapes[];
+} packed_shapes;
+
+struct shape {
+  vec2 position;
+  float rotation;
+  uint shape_type;
+  uint blend_type;
+  uint other_flags;
+  vec4 shape_data;
+  vec4 colour;
+  float rounding_radius;
+  float annular_radius;
+  float blend_radius;
+};
+
+vec4 unpack_rgba8(uint p) {
+  vec4 rgba;
+  rgba.x = float((p>> 0)&0xff) / 255;
+  rgba.y = float((p>> 8)&0xff) / 255;
+  rgba.y = float((p>>16)&0xff) / 255;
+  rgba.y = float((p>>24)&0xff) / 255;
+  return rgba;
+}
+
+shape unpack_shape(packed_shape p) {
+  shape result;
+  result.position = p.transform_flags.xy;
+  result.rotation = p.transform_flags.z;
+  uint flags = floatBitsToUint(p.transform_flags.w);
+  result.shape_type = flags & 0xff;
+  result.blend_type = (flags>>8) & 0xff;
+  result.other_flags = ((flags>>16) & 0x0000ffff);
+  result.shape_data = p.shape_data;
+  result.colour = unpack_rgba8(floatBitsToUint(p.colour_modifiers.x));
+  result.rounding_radius = p.colour_modifiers.y;
+  result.annular_radius = p.colour_modifiers.z;
+  result.blend_radius = p.colour_modifiers.w;
+  return result;
+}
+
+// https://iquilezles.org/www/articles/distfunctions2d/distfunctions2d.htm
+// all are centered on the origin and unrotated
+float sd_circle(vec2 p, float r) { return length(p) - r; }
+float sd_line(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a;
+  vec2 ba = b - a;
+  float h = clamp( dot(pa, ba) / dot(ba, ba), 0, 1 );
+  return length((ba * -h) + pa);
+}
+float sd_box(vec2 p, vec2 sz) {
+  vec2 d = abs(p) - sz;
+  return length(max(d, vec2(0))) + min(max(d.x, d.y), 0);
+}
+float sd_hexagon(vec2 p, float r) {
+    const vec3 k = vec3(-0.866025404, 0.5, 0.577350269);
+    p = abs(p);
+    p -= 2.0*min(dot(k.xy, p), 0) * k.xy;
+    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * sign(p.y);
+}
+float sd_ellipse(vec2 p, vec2 ab) {
+  p = abs(p); if (p.x > p.y) { p = p.yx; ab = ab.yx; }
+  float l = ab.y*ab.y - ab.x*ab.x;
+
+  float m = ab.x * p.x / l;      float m2 = m * m;
+  float n = ab.y * p.y / l;      float n2 = n * n;
+  float c = (m2 + n2 - 1.0) / 3.0; float c3 = c * c * c;
+
+  float q = c3 + m2 * n2 * 2.0;
+  float d = c3 + m2 * n2;
+  float g = m + m * n2;
+
+  float co;
+  if (d < 0.0) {
+     float h = acos(q/c3)/3.0;
+     float s = cos(h);
+     float t = sin(h)*sqrt(3.0);
+     float rx = sqrt( -c*(s + t + 2.0) + m2 );
+     float ry = sqrt( -c*(s - t + 2.0) + m2 );
+     co = (ry+sign(l)*rx+abs(g)/(rx*ry)- m)/2.0;
+  } else {
+     float h = 2.0*m*n*sqrt( d );
+     float s = sign(q+h)*pow(abs(q+h), 1.0/3.0);
+     float u = sign(q-h)*pow(abs(q-h), 1.0/3.0);
+     float rx = -s - u - c*4.0 + 2.0*m2;
+     float ry = (s - u)*sqrt(3.0);
+     float rm = sqrt( rx*rx + ry*ry );
+     co = (ry/sqrt(rm-rx)+2.0*g/rm-m)/2.0;
+  }
+
+  vec2 r = ab * vec2(co, sqrt(1.0-co*co));
+  return length(r-p) * sign(p.y-r.y);
+}
+
+// modifiers
+// to round, just subtract rounding radius
+float sd_round(float sd, float r) { return sd - r; }
+float sd_annular(float sd, float r) { return abs(sd) - r; }
+
+// smooth booleans
+float smooth_union(float sd1, float sd2, float k) {
+  float h = clamp(0.5 + 0.5*(sd2-sd1)/k, 0, 1);
+  return mix(sd2, sd1, h) - k*h*(1-h);
+}
+float smooth_difference(float sd1, float sd2, float k) {
+  float h = clamp(0.5 - 0.5*(sd2+sd1)/k, 0, 1);
+  return mix(sd2, -sd1, h) - k*h*(1-h);
+}
+float smooth_intersect(float sd1, float sd2, float k) {
+  float h = clamp(0.5 - 0.5*(sd2-sd1)/k, 0, 1);
+  return mix(sd2, sd1, h) + k*h*(1.0-h);
+}
+
+vec2 rotate(vec2 p, float a) {
+  float ca = cos(a);
+  float sa = sin(a);
+  vec2 pr = vec2(p.x * ca - p.y * sa, p.x * sa + p.y * ca);
+  return pr;
+}
+
+
+vec4 eval_shape(shape s, vec2 p, inout float sd_previous) {
+  vec2 pt = p - s.position.xy;
+  pt = rotate(pt, -s.rotation);
+  float sd = 100;
+  switch(s.shape_type) {
+    case 0:
+    sd = sd_circle(pt, s.shape_data.x);
+    break;
+    case 1:
+    sd = sd_ellipse(pt, s.shape_data.xy);
+    break;
+    case 2:
+    sd = sd_line(pt, s.shape_data.xy, s.shape_data.zw);
+    break;
+    case 4:
+    sd = sd_box(pt, s.shape_data.xy);
+    break;
+    case 6:
+    sd = sd_hexagon(pt, s.shape_data.x);
+    break;
+  }
+
+  if (s.rounding_radius != 0) {
+    sd = sd_round(sd, s.rounding_radius);
+  }
+
+  if (s.annular_radius != 0) {
+    sd = sd_annular(sd, s.annular_radius);
+  }
+
+  switch (s.blend_type) {
+    case 0: break;
+    case 1:
+      sd = smooth_union(sd, sd_previous, s.blend_radius);
+      break;
+    case 2:
+      sd = smooth_difference(sd, sd_previous, s.blend_radius);
+      break;
+    case 3:
+      sd = smooth_intersect(sd, sd_previous, s.blend_radius);
+      break;
+  }
+
+  float a = 1 - clamp((sd+1) * 1, 0, 1);
+  sd_previous = sd;
+  return s.colour * vec4(1,1,1,a);
+}
+
+
+vec4 gui_blend(vec4 bg, vec4 fg) {
+  float a = max(bg.w, fg.w);
+  return vec4(mix(bg.xyz, fg.xyz, fg.w), a);
+}
+
+void main () {
+  uvec2 gui_size = imageSize(gui_plane);
+  uvec2 middle = gui_size / 2;
+  uvec2 pixel = gl_GlobalInvocationID.xy;
+  if ( any(greaterThanEqual(pixel.xy,gui_size.xy)) ) {
+    return;
+  }
+
+  vec2 pt = vec2(pixel);
+
+  vec4 gui_pixel = vec4(0);
+  float sd_history = 100;
+
+  shape test;
+  /*
+  test.position = vec2(128, 128);
+  test.rotation = 0.1;
+  test.shape_type = 4;
+  test.blend_type = 0;
+  test.other_flags = 0;
+  test.shape_data = vec4(36, 60, 0, 0);
+  test.colour = vec4(0.2, 0.1, 0.5, 1);
+  test.rounding_radius = 8;
+  test.annular_radius = 0;
+
+  gui_pixel = gui_blend(gui_pixel, eval_shape(test, pt, sd_history));
+
+  test.position = vec2(128, 128);
+  test.rotation = 0.1;
+  test.shape_type = 4;
+  test.blend_type = 2;
+  test.shape_data = vec4(32, 56, 0, 0);
+  test.colour = vec4(0.1, 0.3, 0.7, 1);
+  test.rounding_radius = 8;
+  test.annular_radius = 2;
+  test.blend_radius = 5;
+  gui_pixel = gui_blend(gui_pixel, eval_shape(test, pt, sd_history));
+
+  test.blend_type = 0;
+  test.shape_type = 6;
+  test.shape_data = vec4(48,0,0,0);
+  test.rotation = 0;
+  test.position = vec2(384, 66);
+  test.annular_radius = 0;
+  test.colour = vec4(0.3, 0.6, 0.1, 1);
+  gui_pixel = gui_blend(gui_pixel, eval_shape(test, pt, sd_history));
+  test.annular_radius = 4;
+  test.colour.rgb *= 0.25;
+  gui_pixel = gui_blend(gui_pixel, eval_shape(test, pt, sd_history));
+*/
+/*
+  test.blend_type = 0;
+  test.other_flags = 0;
+  test.rotation = 0;
+  test.shape_type = 1;
+  test.shape_data = vec4(48, 64, 0, 0);
+  float middle_h = float(middle.x);
+  test.position = vec2( middle_h, 80);
+  test.rounding_radius = 0;
+  for (int i = 0; i < 5; ++i) {
+    float offset = float(i) - 2.0;
+    test.position.x = offset * 128 + middle_h;
+    test.rotation = offset * -0.1;
+    test.colour = vec4(0.05, 0.1, 0.2, 1);
+    test.annular_radius = 8;
+    gui_pixel = gui_blend(gui_pixel, eval_shape(test, pt, sd_history));
+
+    test.colour = vec4(0.86, 0.87, 0.9, 1);
+    test.annular_radius = 0;
+    gui_pixel = gui_blend(gui_pixel, eval_shape(test, pt, sd_history));
+  }
+*/
+  imageStore(gui_plane, ivec2(pixel), gui_pixel);
+}

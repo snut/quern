@@ -1,0 +1,20 @@
+
+
+// storage buffers
+
+struct particle_data {
+  vec4 transform[3];
+  vec4 velocity_age;
+  vec4 tint;
+};
+
+layout(std430, binding=1) readonly buffer pcl_buffer_r {
+  particle_data pcls[];
+} old_particles;
+
+layout(std430, binding=2) writeonly buffer pcl_buffer_w {
+  particle_data pcls[];
+} new_particles;
+
+// spawn new particles... somehow
+// update and copy live particles (swap bindings each frame)

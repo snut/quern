@@ -1,0 +1,264 @@
+//#version 450
+
+layout(local_size_x=256, local_size_y=1, local_size_z=1) in;
+
+// view-projection to cull with
+layout(location=0) uniform mat4 camera_vp;
+layout(location=1) uniform uint draw_count;
+layout(location=2) uniform uint frustum_cull;
+
+// one option - add a layer of indirection
+// store mesh aabb or sphere, plus first index and elem count (plus LODs?)
+// and use all this to generate an indirectdraw buffer directly
+struct aabb {
+  vec4 minBound;
+  vec4 maxBound;
+};
+
+#define USE_MESH_DATA 0
+#if USE_MESH_DATA
+struct meshLod {
+  uvec2 indexCountAndFirst;
+};
+
+struct meshData {
+  aabb bounds;
+  meshLod lod0;
+};
+
+layout(std430, binding=1) restrict readonly buffer meshes_ {
+  meshData mesh[];
+} meshes;
+#else
+layout(std430, binding=1) restrict readonly buffer aabbs_ {
+  aabb aabbs[];
+} bounds;
+#endif
+
+layout(std430, binding=2) restrict readonly buffer instances_ {
+  mat4 matrixAndTint[];
+} instances;
+
+struct packedDraw {
+  uint meshDataIndex;
+  uint materialIndex;
+  uint instanceIndex;
+};
+
+layout(std430, binding=3) restrict readonly buffer packedDraws_ {
+  packedDraw draw[];
+} packedDraws;
+
+// another option - pack a mesh index in here somehow
+// but this has to either be done in a harmless fashion (baseInstanceIndex?), or
+// we have to copy the entire structure during the culling and fix it up (instanceCount?)
+struct indirectDraw {
+  uint elementCount;
+  uint instanceCount;
+  uint firstIndex;
+  uint baseVertex;
+  uint baseIndex;
+};
+
+layout(std430, binding=4) restrict buffer indirects_ {
+  indirectDraw draw[];
+} indirects;
+
+// debug!
+#define DEBUGGING 0
+
+#if DEBUGGING
+// whee
+layout(location=3) uniform mat4 camera_inverseV;
+layout(location=4) uniform mat4 camera_inverseP;
+
+struct debugVtx { vec4 pos; vec4 colour; };
+layout(std430, binding=10) buffer debugVB_ {
+  debugVtx vertices[];
+} debugVB;
+layout(std430, binding=11) buffer debugIB_ {
+  uint indices[];
+} debugIB;
+layout(binding=0, offset=0) uniform atomic_uint debugTriCount;
+layout(binding=0, offset=4) uniform atomic_uint debugVtxCount;
+
+void debugQuad(uint debugIndices[8], uint a, uint b, uint c, uint d) {
+  uint tri0 = atomicCounterIncrement(debugTriCount);
+  uint idx0 = tri0 * 3;
+  debugIB.indices[idx0+0] = debugIndices[a];
+  debugIB.indices[idx0+1] = debugIndices[b];
+  debugIB.indices[idx0+2] = debugIndices[d];
+  uint tri1 = atomicCounterIncrement(debugTriCount);
+  uint idx1 = tri1 * 3;
+  debugIB.indices[idx1+0] = debugIndices[a];
+  debugIB.indices[idx1+1] = debugIndices[d];
+  debugIB.indices[idx1+2] = debugIndices[c];
+}
+
+// nb: culling disabled during debug draw, so these are all kinds of weird winding
+void debugCube(uint debugIndices[8]) {
+  debugQuad(debugIndices, 0, 2, 4, 6); // -x
+  debugQuad(debugIndices, 1, 3, 5, 7); // +x
+  debugQuad(debugIndices, 0, 1, 4, 5); // -y
+  debugQuad(debugIndices, 2, 3, 6, 7); // +y
+  debugQuad(debugIndices, 0, 1, 2, 3); // -z
+  debugQuad(debugIndices, 4, 5, 6, 7); // +z
+}
+
+#endif
+
+
+void main() {
+  uint ix = gl_GlobalInvocationID.x;
+
+  if (ix >= draw_count) { return; }
+
+  ix %= draw_count;
+
+  packedDraw draw = packedDraws.draw[ix];
+
+  uint meshIdx = draw.meshDataIndex;
+  mat4 matTint = instances.matrixAndTint[draw.instanceIndex];
+  mat4 world = matTint;
+  mat4 cameraVP = camera_vp;
+  world[3] = vec4(0,0,0,1);
+  world = transpose(world);
+
+  // seems like these are off somehow
+#if USE_MESH_DATA
+  meshData mesh = meshes.mesh[meshIdx];
+  vec3 mn = mesh.bounds.minBound.xyz;
+  vec3 mx = mesh.bounds.maxBound.xyz;
+#else
+  aabb bound = bounds.aabbs[meshIdx];
+  vec3 mn = bound.minBound.xyz;
+  vec3 mx = bound.maxBound.xyz;
+#endif
+  // padding
+  mn -= vec3(0.01);
+  mx += vec3(0.01);
+
+  vec3 aabbVerts[8] = {
+    vec3(mn.x, mn.y, mn.z),
+    vec3(mx.x, mn.y, mn.z),
+    vec3(mn.x, mx.y, mn.z),
+    vec3(mx.x, mx.y, mn.z),
+    vec3(mn.x, mn.y, mx.z),
+    vec3(mx.x, mn.y, mx.z),
+    vec3(mn.x, mx.y, mx.z),
+    vec3(mx.x, mx.y, mx.z)
+  };
+
+
+  vec3 sphereCenter = (world * vec4((mn+mx) * 0.5, 1.0)).xyz;
+  float sphereRadius = length((world * vec4(mx,1)).xyz - sphereCenter);
+
+  vec4 sphereCenterH = cameraVP * vec4(sphereCenter, 1);
+  vec3 sphereNDC = sphereCenterH.xyz / sphereCenterH.w;
+
+  /*
+  we can occlusion cull if all the vertices of the aabb are on the
+  wrong side of any single frustum plane.
+  repeatedly bitwise-and the bits associated with the six frustum planes if
+  a vertex is outside that plane
+  */
+
+#if DEBUGGING
+  uint debugIndices[8];
+  uint debugPlanes[8];
+
+  // add a frustum vis
+  #if 1
+  if (ix == 0) {
+    for (int i = 0; i < 8; ++i) {
+      vec4 h = vec4(
+        float(i % 2) * 2.0 - 1.0,
+        float((i/2)%2) * 2.0 - 1.0,
+        float((i/4)%2),// * 2.0 - 1.0,
+        1 );
+      vec4 t = camera_inverseP * h;
+      t = camera_inverseV * vec4(t.xyz * t.w, 1);
+
+      uint debugIdx = atomicCounterIncrement(debugVtxCount);
+      debugIndices[i] = debugIdx;
+      debugVtx vtx;
+      vtx.pos = vec4(t.xyz, 1.0);
+      vtx.colour = vec4(0.05 * h.x + 0.1, 0.3, 0.05 * h.y + 0.1, 0.15);
+      debugVB.vertices[debugIdx] = vtx;
+    }
+    debugCube(debugIndices);
+  }
+  #endif
+
+  #define EARLY_VERTS 1
+#endif
+
+  uint planes = 63;
+  for (int i = 0; i < 8; ++i) {
+    vec4 t = world * vec4(aabbVerts[i],1);
+    vec4 h = cameraVP * vec4(t.xyz, 1);
+    uint px = h.x < -h.w ? 0x02 : (h.x > h.w ? 0x01 : 0x0);
+    uint py = h.y < -h.w ? 0x08 : (h.y > h.w ? 0x04 : 0x0);
+    uint pz = h.z < -h.w ? 0x20 : (h.z > h.w ? 0x10 : 0x0);
+    uint p_xyz = (px | py | pz);
+    planes = planes & p_xyz;
+
+#if DEBUGGING
+    if (frustum_cull != 0) {
+      debugPlanes[i] = p_xyz;
+      #if EARLY_VERTS
+        uint debugIdx = atomicCounterIncrement(debugVtxCount);
+        debugIndices[i] = debugIdx;
+
+        debugVtx vtx;
+        vtx.pos = vec4(t.xyz,1);
+        vtx.colour = p_xyz == 0 ? vec4(0.1,0.1,0.2,0.5) : vec4(0.3,0.1,0.1,0.25);
+        debugVB.vertices[debugIdx] = vtx;
+      #endif
+    }
+#endif
+  }
+
+#if DEBUGGING
+  #if EARLY_VERTS == 0
+    for (int i = 0; i < 8; ++i) {
+      uint debugIdx = atomicCounterIncrement(debugVtxCount);
+      debugIndices[i] = debugIdx;
+
+      uint p_xyz = debugPlanes[i];
+      vec4 t = world * vec4(aabbVerts[i],1);
+
+      debugVtx vtx;
+      vtx.pos = vec4(t.xyz,1);
+      if (planes != 0) {
+        vtx.colour = vec4(0.1, 0.0, 0.0, 0.25);
+      } else {
+        vtx.colour = p_xyz == 0 ?
+          vec4(0.1, 0.1, 0.3, 0.5) :
+          vec4(0.3, 0.2, 0.1, 0.5);
+      }
+      debugVB.vertices[debugIdx] = vtx;
+    }
+  #endif
+
+  if (frustum_cull != 0) {
+    debugCube(debugIndices);
+  }
+#endif
+
+  bool visible = frustum_cull == 0 ? true : (planes == 0);
+
+#if 0
+  indirectDraw d;
+  d.elementCount = visible ? mesh.lod0.elementCount : 0;
+  d.instanceCount = visible ? 1 : 0;
+  d.firstIndex = mesh.lod0.firstIndex;
+  d.baseVertex = 0;
+  d.baseIndex = (draw.instanceIndex & 0xffff) | (draw.materialIndex << 16);
+#else
+  indirectDraw d = indirects.draw[ix];
+  d.instanceCount = visible ? 1 : 0;
+#endif
+  indirects.draw[ix] = d;
+
+}

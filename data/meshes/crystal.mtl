@@ -1,0 +1,12 @@
+# Blender MTL File: 'hex_tile.blend'
+# Material Count: 1
+
+newmtl crystal
+Ns 765.106053
+Ka 1.000000 1.000000 1.000000
+Kd 0.322644 0.541296 0.800000
+Ks 0.500000 0.500000 0.500000
+Ke 0.0 0.0 0.0
+Ni 1.450000
+d 0.201835
+illum 9

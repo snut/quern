@@ -1,0 +1,116 @@
+
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+
+float saturate(float x) { return clamp(x, 0.0, 1.0); }
+const float pi = 3.14159;
+
+vec2 panoramaToUV(vec3 dir) {
+  float v = acos(dir.z) / pi;
+  vec2 dxy = abs(dir.z) > 0.9999 ? vec2(1,0) : normalize(vec2(dir.x, dir.y));
+  float u = acos(dxy.x) / (2*pi);
+  if(dxy.y < 0) {
+    u = 1 - u;
+  }
+  return vec2(1-fract(u), saturate(v));
+}
+
+layout(location=0) uniform uint topMipSize;
+
+layout(rgba16f, binding = 0) readonly uniform image2D panoramaEnv;
+layout(rgba16f, binding = 1) writeonly uniform imageCube cubeEnv;
+
+vec4 sampleEnv(vec3 dir) {
+  vec2 uv = panoramaToUV(dir);
+  ivec2 size = imageSize(panoramaEnv);
+  ivec2 pixelCoord = clamp(ivec2( vec2(size) * uv ), ivec2(0), size - ivec2(1));
+  vec4 raw = imageLoad(panoramaEnv, pixelCoord);
+
+  // 65k ~ max for float16
+  // high values cause sampling errors with simple samples
+  // mips might help
+  const float halfMax = 64000; // not actually max, but close enough
+  const float maxEnv = 512; // lose a lot of energy in high roughness, but much less speckle
+  return clamp(raw, vec4(0), vec4(maxEnv));
+}
+
+vec3 importanceSample( vec2 xi, float roughness, mat3 tbn ) {
+  float a = roughness * roughness;
+  //float phiOff = float(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y) * 13037.f / pi;
+  float phi = 2 * pi * xi.x;
+  float cphi = cos(phi);
+  float sphi = sin(phi);
+  float ctheta = sqrt( (1-xi.y) / (1 + (a*a-1) * xi.y) );
+  float stheta = sqrt( 1 - ctheta * ctheta );
+  vec3 d = vec3(stheta * cphi, stheta * sphi, ctheta);
+  return tbn * d;
+}
+
+float radicalInverse_VdC(uint bits) {
+  bits = (bits << 16u) | (bits >> 16u);
+  bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+  bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+  bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+  bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+  return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+
+vec2 hammersley2d(uint i, uint N) {
+  return vec2(float(i)/float(N), radicalInverse_VdC(i));
+}
+
+vec4 roughEnv(float roughness, vec3 dir, mat3 m) {
+  if (roughness <= 0) {
+    return sampleEnv(dir);
+  }
+
+  m[2] = dir;
+  m[0] = normalize(cross(m[1], m[2]));
+  m[1] = normalize(cross(m[2], m[0]));
+
+  vec4 sum = vec4(0);
+  const uint samples = 1024*4; // 4k samples is... some. not enough for images with the sun in clear skies
+  for (uint i = 0; i < samples; ++i) {
+    vec2 xi = hammersley2d(i, samples);
+    vec3 l = importanceSample(xi, roughness, m);
+    sum += sampleEnv(l) * saturate(dot(l,dir));
+  }
+  return sum / float(samples);
+}
+
+const mat3 faces[6] = mat3[](
+  mat3( 0, 0,-1,  0,-1, 0,  1, 0, 0 ),
+  mat3( 0, 0, 1,  0,-1, 0, -1, 0, 0 ),
+  mat3( 1, 0, 0,  0, 0, 1,  0, 1, 0 ),
+  mat3( 1, 0, 0,  0, 0,-1,  0,-1, 0 ),
+  mat3( 1, 0, 0,  0,-1, 0,  0, 0, 1 ),
+  mat3(-1, 0, 0,  0,-1, 0,  0, 0,-1 )
+);
+
+void main () {
+  uint faceIdx = gl_GlobalInvocationID.z;
+  uvec2 faceSize = imageSize(cubeEnv);
+
+  if ( any(greaterThanEqual(gl_GlobalInvocationID.xy,faceSize.xy)) ) {
+    return;
+  }
+
+  mat3 faceM = faces[faceIdx];
+
+  vec2 faceUV = (vec2(gl_GlobalInvocationID.xy)+vec2(0.5,0.5)) / vec2(faceSize);
+  vec3 dir = normalize(faceM * vec3(faceUV * 2 - 1,1));
+
+  vec4 envPixel = vec4( dir * 0.5 + 0.5, 1 );
+
+  uint largest = topMipSize;
+  uint smallest = 1;
+  float smoothness = float(faceSize.x - smallest) / float(largest - smallest);
+  float roughness = saturate(1 - smoothness);
+
+  // to make good use of the mips, make roughness deeply nonlinear
+  roughness *= roughness;
+  roughness *= roughness;
+
+  envPixel = roughEnv(roughness, dir, faceM);
+
+  imageStore(cubeEnv, ivec3(gl_GlobalInvocationID), envPixel);
+}

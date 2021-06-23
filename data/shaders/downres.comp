@@ -1,0 +1,60 @@
+
+
+layout(local_size_x=16, local_size_y=16, local_size_z=1) in;
+
+#ifdef MULTISAMPLE
+layout(rgba16f, binding = 0) readonly uniform image2DMS source;
+#else
+layout(rgba16f, binding = 0) readonly uniform image2D source;
+#endif
+layout(rgba16f, binding = 1) writeonly uniform image2D destination;
+
+void main () {
+  uvec2 dstSize = imageSize(destination);
+  uvec2 pixel = gl_GlobalInvocationID.xy;
+  uvec2 delta = uvec2(0,1);
+
+  if ( any(greaterThanEqual(gl_GlobalInvocationID.xy,dstSize.xy)) ) {
+    return;
+  }
+#if 0 //G_DOWNSAMPLE
+  float outer = 0.3247;
+  float inner = 0.8825;
+  vec4 dst = vec4(0);
+  float renorm = 0;
+
+  int off[4] = {-1, 0, 1, 2};
+  float weight[4] = {outer, inner, inner, outer};
+
+
+  for (int y = 0; y < 4; ++y) {
+    for (int x = 0; x < 4; ++x) {
+      ivec2 d = ivec2(off[x], off[y]);
+      float w = weight[x] * weight[y];
+
+      dst += imageLoad(source, ivec2(pixel*2) + d) * w;
+      renorm += w;
+    }
+  }
+
+  dst /= renorm;
+
+#else
+
+  #ifdef MULTISAMPLE
+  vec4 src00 = imageLoad(source, ivec2(pixel * 2 + delta.xx), 0);
+  vec4 src10 = imageLoad(source, ivec2(pixel * 2 + delta.yx), 0);
+  vec4 src01 = imageLoad(source, ivec2(pixel * 2 + delta.xy), 0);
+  vec4 src11 = imageLoad(source, ivec2(pixel * 2 + delta.yy), 0);
+  #else
+  vec4 src00 = imageLoad(source, ivec2(pixel * 2 + delta.xx));
+  vec4 src10 = imageLoad(source, ivec2(pixel * 2 + delta.yx));
+  vec4 src01 = imageLoad(source, ivec2(pixel * 2 + delta.xy));
+  vec4 src11 = imageLoad(source, ivec2(pixel * 2 + delta.yy));
+  #endif
+
+  vec4 dst = (src00 + src01 + src10 + src11) * 0.25;
+#endif
+
+  imageStore(destination, ivec2(pixel), dst);
+}
