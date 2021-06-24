@@ -1,4 +1,3 @@
-//#version 450
 #extension GL_ARB_bindless_texture : enable
 
 float saturate(float x) { return clamp(x, 0.0, 1.0); }
@@ -55,7 +54,7 @@ surface makeSurface(material mtl, mat3x3 tbn, float nrmSign, vec3 vtxColour) {
   return result;
 }
 
-//naughty dog tech art
+//naughty dog tech art notes: procedural wetness for surfaces
 float clampRange(float x, float l, float u) {
   return saturate((x-l) / (u-l));
 }
@@ -75,7 +74,6 @@ void wetten(inout surface surf, float wetness) {
   }
 }
 
-
 struct materialData {
   uvec2 baseColour;
   uvec2 normalMap;
@@ -83,6 +81,7 @@ struct materialData {
   uvec2 subsurfaceEmissive;
 };
 
+// extremely accurate sRGB <-> linear conversion functions ahead
 vec3 toLinear(vec3 c) {
   vec3 result = c;
   result.xyz *= result.xyz;
@@ -96,13 +95,14 @@ vec3 fromLinear(vec3 c) {
   return result;
 }
 vec4 fromLinear(vec4 c) { return vec4( fromLinear(c.xyz), c.w ); }
+// end extermely accurate not-at-all a hack colour space conversion
 
-float perceptualToRoughness(float r) { return r*r; }
-float roughnessToPerceptual(float r) { return sqrt(r); }
 
 // Kaplanyan 2016, stable specular highlights
 // Tokuyoshi 2017, error reduction and simplification for shading anti-aliasing
 // Tokuyoshi and Kaplanyan 2019, improved geometric specular antialiasing
+float perceptualToRoughness(float r) { return r*r; }
+float roughnessToPerceptual(float r) { return sqrt(r); }
 float normalFiltering(float perceptRoughness, const vec3 normal) {
   const float specularAAVariance = 0.25;
   const float specularAAThreshold = 0.18;
@@ -118,9 +118,8 @@ float normalFiltering(float perceptRoughness, const vec3 normal) {
 material makeMaterial(materialData mtl, const vec2 uv) {
   material result;
   result.baseColour = toLinear( texture(sampler2D(mtl.baseColour), uv) );
-  vec4 tsn = /*toLinear*/(texture(sampler2D(mtl.normalMap), uv));
+  vec4 tsn = texture(sampler2D(mtl.normalMap), uv);
   result.normal = tsn.xyz * 2 - 1;
-  //result.normal.xy *= -1;
   vec4 armh = texture(sampler2D(mtl.ARMH), uv);
   result.ao = armh.x;
   result.roughness = max(armh.y, 0.002025);
@@ -133,7 +132,6 @@ material makeMaterial(materialData mtl, const vec2 uv) {
 }
 
 // lighting
-
 struct lightAccum {
   vec3 diffuse;
   vec3 specular;
@@ -314,17 +312,15 @@ void lighting(inout lightAccum lit, surface surf, vec3 l, vec3 v, vec3 lightClr)
   vec3 diffuse = surf.albedo * (n_l) / pi;
   lit.diffuse += diffuse * lightClr;
   lit.specular += specular * lightClr;
-  //return (diffuse + specular) * lightClr;
 
-  // this is some made up nonsense
+  // this is some made up nonsense! Mostly for moss and stuff...
 #ifdef SUBSURFACE
   vec3 fuzz = surf.subsurface;
   vec3 fuzzN = normalize(surf.geoTBN[2] * 4.0 + surf.tbn[2]);
   float fuzzAmnt = max( 0.0, (dot(l, fuzzN) + 0.7) / 1.7 ) * (0.5*surf.mtl.height+0.5);
   float fuzzFres = 1.0 - abs(dot(fuzzN, v));
   fuzzFres *= fuzzFres;
-  float fuzzScatter = fuzzFres;// * saturate(1-dot(v,l));
-  //lit.diffuse = mix( lit.diffuse, (fuzz * fuzzScatter) * lightClr,  fuzzAmnt * 0.35 );
+  float fuzzScatter = fuzzFres;
   lit.diffuse += (fuzzScatter * fuzzAmnt * 0.25) * (fuzz*lightClr);
 #endif
 }
@@ -348,16 +344,18 @@ struct clusterData {
 #define PCF_SHADOWS 1
 #define ESM_SHADOWS 0
 
-// uniforms
+// per-view uniforms: move these to a big ol' buffer
 layout(location = 1) uniform mat4 inverseView;
 layout(location = 2) uniform mat4 sunlightViewProjection;
 layout(location = 3) uniform mat4 sunlightInverseView;
+
 #if PCF_SHADOWS
 layout(location = 8, binding=1) uniform sampler2DShadow sunlightShadow;
 layout(location = 9, binding=9) uniform sampler2D sunglightShadowRaw;
 #else
 layout(location = 8, binding=1) uniform sampler2D sunlightShadow;
 #endif
+
 layout(location = 13, binding=0) uniform samplerCube cubeEnvironmentMap;
 layout(location = 14, binding=2) uniform sampler2D splitSumLUT;
 layout(location = 15) uniform int debugMode = 0;
@@ -371,6 +369,7 @@ layout(location = 4, binding=3) uniform sampler2D ssao;
 
 layout(location = 17) uniform vec2 zNearFar = vec2(0.1, 100);
 float linearDepth(float ndcZ) {
+  // maybe reversed-z should be a define, although it mostly works now
 #if 1
   // reversed z
   float z = ndcZ;
@@ -403,6 +402,7 @@ layout(std430, binding=0) readonly buffer materialBuffer {
   materialData materials[];
 } allMaterials;
 
+// unused light storage buffer
 layout(std430, binding=1) readonly buffer pointLightBuffer {
   pointLightData lights[];
 } allPointLights;
@@ -418,14 +418,15 @@ const vec3 debugLightDir = normalize(vec3(1.0, 1.0, 0.1));
 void main() {
   materialData mtlData = allMaterials.materials[materialAndInstance.x];
   material mtl = makeMaterial(mtlData, fragUVs.xy);
-
   vec3 ndc = fragHPos.xyz / fragHPos.w;
 
-
+// there's a depth pre-pass now, this shouldn't be needed
+#if 0
 #ifdef FOLIAGE
   if (mtl.baseColour.a < 0.5) {
     discard;
   }
+#endif
 #endif
 
   // lighting debug
@@ -450,24 +451,15 @@ void main() {
     surf.mtl.ao *= ao;
   }
 #endif
+
   surf.ao3 = aoMulti(surf.albedo, surf.mtl.ao);
-
-
   surf.mtl.roughness = normalFiltering(surf.mtl.roughness, surf.tbn[2]);
-
-#if 0
-  //+TEST WETNESS
-  float wet = saturate( 2 - 0.45 * length(fragWorldPos - vec3(6,6,0)));
-  wet *= saturate(surf.geoTBN[2].z);
-  wet = saturate(wet - surf.mtl.height * 0.25);
-  wetten(surf, wet);
-  //-TEST
-#endif
 
   vec3 cameraPos = vec3(inverseView[3].xyz);
   vec3 e = fragWorldPos - cameraPos;
   vec3 v = -normalize(e);
 
+  // sunlight parameters
   vec3 l_dir = normalize(sunlightInverseView[2].xyz);
   vec3 l_colour = sunLightColour;
 
@@ -476,29 +468,20 @@ void main() {
   vec3 shadowNDC = shadowH.xyz / shadowH.w;
   shadowNDC.xy = shadowNDC.xy * 0.5 + 0.5;
 
-
 #if PCF_SHADOWS // pcf with shadow sampler (comparison sampling)
   float sampleBias1 = 1.0 / 2048.0;
   float sampleBias0 = 1.0 / 256.0;
   float sampleBias = mix(sampleBias0, sampleBias1, saturate(abs(dot(l_dir, surf.geoTBN[2]))));
-  //shadowNDC.z -= sampleBias;
   #if 1 // cheap and nasty one-tap, debug
-  float shadow = textureLod(sunlightShadow, shadowNDC, 0);
-
-  // debugging the annoying way
-  //vec4 rawShadow = textureLod(sunglightShadowRaw, shadowNDC.xy, 0);
-  //shadow = rawShadow.r > shadowNDC.z ? 0 : 1;
-
+    float shadow = textureLod(sunlightShadow, shadowNDC, 0);
   #else
-  float shadow = 0;
-  for (int i = -1; i <= 1; ++i ) {
-    for (int j = -1; j <= 1; ++j ) {
-      vec3 off = vec3(i,j,0) / 2048.0;
-      //off.z = -float(abs(i)+abs(j)) * sampleBias;
-      shadow += textureLod(sunlightShadow, shadowNDC + off, 0) / 9.0;
+    float shadow = 0;
+    for (int i = -1; i <= 1; ++i ) {
+      for (int j = -1; j <= 1; ++j ) {
+        vec3 off = vec3(i,j,0) / 2048.0;
+        shadow += textureLod(sunlightShadow, shadowNDC + off, 0) / 9.0;
+      }
     }
-  }
-  //shadow = saturate(shadow * 0.8 + 0.2);
   #endif
 #elif ESM_SHADOWS // esm shadows
   const float zExp = 70.0;
@@ -506,26 +489,20 @@ void main() {
   float shadowZ = textureLod(sunlightShadow, shadowNDC.xy, 0).x;
   float shadowZExp = exp(zExp * shadowZ);
   float shadow = saturate(shadowZExp * pixelZExp);
-#else
+#else // no shadows
   float shadow = 1;
 #endif
 
-  //shadow = shadow * 0.5 + 0.5;
 
   lightAccum lit = makeLightAccum();
+
   // analytic light test
   lighting(lit, surf, l_dir, v, l_colour);
   lit.diffuse *= shadow;
   lit.specular *= shadow;
 
-  // add a strong directional light for normal map debugging
-  //lighting(lit, surf, debugLightDir, v, debugLightColour);
-
   // ibl test
   lightingEnv(lit, surf, cubeEnvironmentMap, splitSumLUT, v);
-
-
-
 
   float n_v =  saturate(abs(dot( surf.tbn[2], v )) );
   vec4 debugSplitSum = textureLod(splitSumLUT, vec2(surf.mtl.roughness, n_v), 0 );
@@ -547,17 +524,17 @@ void main() {
 
     // grab transparent backface normal and depth
     #ifdef USE_BACKFACE
-    vec4 backface = textureLod(sceneBackfaces, refractUV, 0);
-    float thickness = max(0, backface.w - linearDepth(ndc.z));
-    vec3 backfaceN = backface.xyz;
+      vec4 backface = textureLod(sceneBackfaces, refractUV, 0);
+      float thickness = max(0, backface.w - linearDepth(ndc.z));
+      vec3 backfaceN = backface.xyz;
 
-    surface inSurf = surf;
-    inSurf.tbn[2] = -backfaceN;
-    lightAccum inLit = makeLightAccum();
-    lighting(inLit, inSurf, l_dir, v, l_colour * surf.mtl.baseColour.xyz);
-    lightingEnv(inLit, inSurf, cubeEnvironmentMap, splitSumLUT, v);
+      surface inSurf = surf;
+      inSurf.tbn[2] = -backfaceN;
+      lightAccum inLit = makeLightAccum();
+      lighting(inLit, inSurf, l_dir, v, l_colour * surf.mtl.baseColour.xyz);
+      lightingEnv(inLit, inSurf, cubeEnvironmentMap, splitSumLUT, v);
 
-    distort += vec2(dot(cam_x, backfaceN), dot(cam_y, backfaceN)) * -0.75;
+      distort += vec2(dot(cam_x, backfaceN), dot(cam_y, backfaceN)) * -0.75;
     #endif
 
     float refractMip = mix(0, 5, surf.mtl.roughness);
@@ -571,27 +548,22 @@ void main() {
     vec4 refracted_G = textureLod(sceneRefraction, refractUV_G, refractMip);
     vec4 refracted_R = textureLod(sceneRefraction, refractUV_R, refractMip);
 
-
     // some very approximate extinction
     #ifdef USE_BACKFACE
-    float scaledThick = thickness / 0.2;
-    float xt = saturate(1 / (1 + scaledThick*scaledThick));
-    float inFres = pow(1 - saturate(abs(dot(backfaceN, v))), 5);
+      float scaledThick = thickness / 0.2;
+      float xt = saturate(1 / (1 + scaledThick*scaledThick));
+      float inFres = pow(1 - saturate(abs(dot(backfaceN, v))), 5);
     #else
-    float xt = 0;
-    float inFres = 0;
+      float xt = 0;
+      float inFres = 0;
     #endif
 
     vec3 rtint = mix(surf.mtl.baseColour.xyz, vec3(1), xt);
     vec3 refracted = vec3(refracted_R.x, refracted_G.y, refracted_B.z) * rtint * (1-inFres);
     lit.diffuse = mix(refracted.xyz, lit.diffuse, alphaF);
     #ifdef USE_BACKFACE
-    lit.specular += inLit.specular * rtint;
-    lit.diffuse += inLit.diffuse * rtint * inFres;
-    #endif
-
-    #if 0//def USE_BACKFACE
-    lit = inLit;
+      lit.specular += inLit.specular * rtint;
+      lit.diffuse += inLit.diffuse * rtint * inFres;
     #endif
   }
 #endif//TRANSPARENCY

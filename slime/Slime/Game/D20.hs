@@ -14,7 +14,7 @@ import System.Random
 
 type MonadDice m = (MonadState StdGen m)
 
-
+-- Keep the rolls and the modifier
 data Result = Result { _dice :: [(Int,Int)], _mod :: Int }
   deriving (Eq, Ord, Show, Read)
 
@@ -24,6 +24,8 @@ rolls = fmap fst . _dice
 roll :: Int -> State StdGen a -> a
 roll seed body = evalState body (mkStdGen seed)
 
+-- Really modifiers should be on the dice for sensible combination of unrelated rolls
+-- The intended use case is to just munge things together for one roll...
 instance Semigroup Result where
   a <> b = Result (_dice a <> _dice b) (_mod a + _mod b)
 instance Monoid Result where
