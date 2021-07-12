@@ -305,7 +305,7 @@ float quantise(float x) {
 // based on unreal's pbr model
 void lighting(inout lightAccum lit, surface surf, vec3 l, vec3 v, vec3 lightClr) {
   vec3 n = surf.tbn[2];
-  vec3 h = normalize(l + v);
+  //vec3 h = normalize(l + v);
   float n_l_raw =  dot(n, l);
   float n_l = saturate( n_l_raw );
   vec3 specular = specBRDF(surf, n_l, l, v, true);
@@ -314,14 +314,34 @@ void lighting(inout lightAccum lit, surface surf, vec3 l, vec3 v, vec3 lightClr)
   lit.specular += specular * lightClr;
 
   // this is some made up nonsense! Mostly for moss and stuff...
-#ifdef SUBSURFACE
+#if 1 //def SUBSURFACE
+  vec3 subs = surf.subsurface;
+  vec3 smoothedN = normalize(surf.geoTBN[2] * 4.0 + surf.tbn[2]);
+  float sub_fres = abs(dot(smoothedN,v));
+
+  float n_l_sm = abs(dot(smoothedN, l));
+  n_l_sm *= n_l_sm * sub_fres;
+  vec3 h_ish  = l + v;
+  h_ish /= length(h_ish) * 0.99 + 0.01;
+  float n_h_sm = abs(dot(h_ish, l));
+  n_h_sm *= n_h_sm * sub_fres;
+
+  float fake_ss = saturate((n_h_sm + n_l_sm) * 0.5);// * 0.9 + 0.1;
+
+  vec3 sub_glow = fake_ss * 0.5 * subs * lightClr * surf.albedo;
+  lit.emissive += sub_glow * 0.25;
+  lit.specular += sub_glow;
+
+
+  /*
   vec3 fuzz = surf.subsurface;
   vec3 fuzzN = normalize(surf.geoTBN[2] * 4.0 + surf.tbn[2]);
   float fuzzAmnt = max( 0.0, (dot(l, fuzzN) + 0.7) / 1.7 ) * (0.5*surf.mtl.height+0.5);
   float fuzzFres = 1.0 - abs(dot(fuzzN, v));
   fuzzFres *= fuzzFres;
   float fuzzScatter = fuzzFres;
-  lit.diffuse += (fuzzScatter * fuzzAmnt * 0.25) * (fuzz*lightClr);
+  lit.diffuse += (fuzzScatter * fuzzAmnt * 0.5) * (fuzz*lightClr);
+  */
 #endif
 }
 
@@ -569,7 +589,7 @@ void main() {
 #endif//TRANSPARENCY
 
 
-  vec3 lit_combined = lit.diffuse + lit.specular;
+  vec3 lit_combined = lit.diffuse + lit.specular + lit.emissive;
 
 #ifdef BACK_FACES
   debugFragmentOut = vec4(surf.tbn[2], linearDepth(ndc.z));

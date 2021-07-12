@@ -15,7 +15,7 @@ module Quern.Codec.Mtl
 
 
 import qualified Data.List as L
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Semigroup (Option(..), Last(..))
 import Control.Monad.State
 import Control.Lens hiding (noneOf, (<.>))
@@ -52,6 +52,9 @@ map_Ks lemur.tga           # specular color texture map
 map_Ns lemur_spec.tga      # specular highlight component
 map_d lemur_alpha.tga      # the alpha texture map
 map_bump lemur_bump.tga    # some implementations use 'map_bump' instead of 'bump' below
+
+**Additions**
+Ku 0.5 0.5 0.5  # subsurface colour
 
 -}
 
@@ -151,6 +154,8 @@ data MtlDefn = MtlDefn
   , _mtlNorm :: !(Maybe ObjMtlTexture) -- normal (rather than bump) map
   , _mtlRMA :: !(Maybe ObjMtlTexture) -- roughness, metallic, AO
   , _mtlORM :: !(Maybe ObjMtlTexture) -- ao, roughness, metallic
+  -- Hacky additions
+  , _mtlKu :: !(MtlChannel (V3 Float))
   } deriving (Eq, Ord, Show, Generic)
 makeLenses ''MtlDefn
 
@@ -183,6 +188,7 @@ emptyMtlDefn = MtlDefn
   , _mtlNorm = Nothing
   , _mtlRMA = Nothing
   , _mtlORM = Nothing
+  , _mtlKu = emptyMtlChannel
   }
 
 data MtlState = MtlState
@@ -279,6 +285,7 @@ mtlLine
   <|> (prefixed "anisor" float >>= (mtlStateDefn . mtlAnisoR .=) . Just)
   <|> (prefixed "#" restOfLine >>= (mtlStateComments <>=) . (:[]))
   <|> (prefixed "map_Bump" texture >>= (mtlStateDefn . mtlBump .=))
+  <|> (prefixCh "Ku" vec3 mtlKu)
   -- <|> (string "" *> pure ())
   <?> "valid .MTL line"
 
@@ -330,12 +337,16 @@ mtlDefnToMaterial defn = MaterialEx mtl opacity
     nrmTx = defn^.mtlBump.mtlTexPath
     emitTx = swapSuffix "_basecolor" "_emit" bcTx
     V3 er eg eb = linToSRGB <$> fromMaybe 0 (defn ^. mtlKe . mtlChScalar)
-    emit = fToByte <$> V4 er eg eb 255
+    V3 ur ug ub = linToSRGB <$> fromMaybe 0 (defn ^. mtlKu . mtlChScalar)
+
+    emitOrSub = fToByte <$> if isJust (defn^.mtlKu.mtlChScalar)
+                  then V4 ur ug ub 255
+                  else V4 er eg eb 0
     mtl = Material
       { _materialBaseColour = (bcTx, bc)
       , _materialNormal = (nrmTx, nrm)
       , _materialAmbientRoughnessMetallicHeight = (armhTx, armh)
-      , _materialSubsurfaceEmissive = (emitTx, emit) }
+      , _materialSubsurfaceEmissive = (emitTx, emitOrSub) }
 
 
 

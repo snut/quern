@@ -101,18 +101,18 @@ generate l u f = roll l u >>= takeTiles >>= traverse f
 genLvl' :: LevelGen Level
 genLvl' = do
   -- slimes
-  pinks <- generate 1 2 (mkUnit "pink_slime" True)
-  wizards <- generate 1 2 (mkUnit "wiz_slime" True)
-  greens <- generate 1 3 (mkUnit "gcube" False)
+  pinks <- generate 1 2 (mkUnit "slimes/pink_slime" True)
+  wizards <- generate 1 2 (mkUnit "slimes/wiz_slime" True)
+  greens <- generate 1 3 (mkUnit "slimes/gcube" False)
   -- plants
-  clover <- generate 6 10 (mkItem "clover")
-  mushes <- generate 3 5 (mkItem "mushroom_cluster")
+  clover <- generate 6 10 (mkItem "props/clover")
+  mushes <- generate 3 5 (mkItem "props/big_shrooms")
   -- things
-  stumps <- generate 4 7 (mkObstacle "stump")
-  rocks <- generate 3 7 (mkObstacle "jagged_rock")
-  rocks2 <- generate 3 6 (mkObstacle "rock_vclr")
-  piles <- generate 4 9 (mkObstacle "rock_pile")
-  crystals <- generate 2 5 (mkObstacle "crystal")
+  stumps <- generate 4 7 (mkObstacle "props/mossy_clump")
+  rocks <- generate 3 7 (mkObstacle "props/jagged_rock")
+  rocks2 <- generate 3 6 (mkObstacle "props/rock_vclr")
+  piles <- generate 4 9 (mkObstacle "props/rock_pile")
+  crystals <- generate 2 5 (mkObstacle "props/crystal")
   sz <- ask
   pure $ Level
     { _levelUnits = M.fromList $ zip (E <$> [1..]) (pinks <> wizards <> greens )

@@ -578,8 +578,12 @@ renderLevel lvl = do
 
       hexes = getZipList $ (\i x y -> i & instanceRotation *~ (x*y)) <$> hexNoTilt <*> tiltX <*> tiltY
       (dryHexes, greenHexes) = partition (\t -> norm (t^.instancePosition) < 5) hexes
-  drawSome_ "hex_tile" greenHexes
-  drawSome_ "hex_tile" dryHexes
+  drawSome_ "tiles/hex_tile" greenHexes
+  drawSome_ "tiles/clutter_hex" dryHexes
+
+  -- add some big background stumps
+  drawOne "props/stump" $ mkInstance (axisAngle (V3 0 1 0) (pi*(-0.1))) (V3 18 17 (-6)) (pure 8)
+  drawOne "props/stump" $ mkInstance (axisAngle (V3 0 0 1) (pi*0.9)) (V3 (-3) 19 (-6)) (pure 10)
 
   -- movement blockers
   V.mapM_ spawnThing (_levelObstacles lvl)

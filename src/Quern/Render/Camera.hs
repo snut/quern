@@ -136,8 +136,12 @@ updateCameraMotion :: Float -> Input -> Camera -> Camera
 updateCameraMotion dt input cam0 = cam{ _cameraPosition = _cameraPosition cam + move, _cameraTarget = _cameraTarget cam + move }
   where
     vel = S.fold (\k v -> maybe v (+ v) (M.lookup k derpMap)) 0 (input ^. inputKeyboard . keyboardButtons . buttonsHeld)
-    V3 x y z = vel ^* dt
+    V3 x y z = vel ^* (dt * spd)
     move = cameraSideways cam ^* x + cameraForward cam ^* y + _cameraUp cam ^* z
+    kyb = input^.inputKeyboard.keyboardButtons
+    spd = if buttonHeld KeycodeLShift kyb || buttonHeld KeycodeRShift kyb
+            then 4
+            else 1
     cam = camResize input $ if buttonHeld ButtonLeft (input ^. inputMouse . mouseButtons)
             then updateCameraInput input cam0
             else cam0

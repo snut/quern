@@ -346,6 +346,10 @@ drawInstanceDflt slices = drawInstance (dflts <$> slices)
 newStaticScene :: (MonadIO m, MonadReader env m, HasLogging env)
                => FilePath -> V2 Int -> Multisampling -> m StaticScene
 newStaticScene envPath resolution msaa = do
+  -- TODO: not... this
+  let yolo :: Show a => Either a b -> b
+      yolo = either (error.show) id
+
   logging "newStaticScene"
   glErrorToLog "newStaticScene.enter"
   meshes <- meshStorageNew
@@ -359,7 +363,7 @@ newStaticScene envPath resolution msaa = do
   foliageDraws <- indirectStorageNew Masked
   addDraws <- indirectStorageNew Additive
   glErrorToLog "newStaticScene.indirectDrawStoreNew"
-  cullProg <- either (error.show) id <$> loadCullingShader
+  cullProg <- yolo <$> loadCullingShader
   glErrorToLog "newStaticScene.loadCullingShader"
 
   _quadIdx <- storeMeshSlice meshes (MeshKey ("*unit_quad", "*")) defaultMaterial Opaque (makeQuad 1 1) quadIndices
@@ -371,16 +375,14 @@ newStaticScene envPath resolution msaa = do
       Right tex -> pure tex
   glErrorToLog "newStaticScene.loadAndFilterPanorama"
 
-  let explodeLefts :: Show a => Either a b -> b
-      explodeLefts = either (error.show) id
 
-  splitSumLUT <- explodeLefts <$> generateSplitSumLUT
+  splitSumLUT <- yolo <$> generateSplitSumLUT
   glErrorToLog "newStaticScene.generateSplitSumLUT"
 
   let shadowFmt = GL_DEPTH_COMPONENT32F
-  shadowBuffer <- explodeLefts <$> createTarget (pure 4096) MsNone 0 GL_RGBA8 (Just shadowFmt)
-  shadowProg <- explodeLefts <$> loadRenderProgramFromFiles "static_shadows.vert" "" "sun_shadow" Nothing
-  renderProg <- explodeLefts <$> loadRenderProgramFromFiles "static_scene.vert" "static_scene.frag" "static_scene" Nothing
+  shadowBuffer <- yolo <$> createTarget (pure 4096) MsNone 0 GL_RGBA8 (Just shadowFmt)
+  shadowProg <- yolo <$> loadRenderProgramFromFiles "static_shadows.vert" "" "sun_shadow" Nothing
+  renderProg <- yolo <$> loadRenderProgramFromFiles "static_scene.vert" "static_scene.frag" "static_scene" Nothing
 
   -- eventually...
   let res = fromIntegral <$> resolution -- V2 1920 1080
@@ -389,37 +391,37 @@ newStaticScene envPath resolution msaa = do
       sceneDpthFmt = Just GL_DEPTH_COMPONENT32F
   sceneTarget <- either (error.show) id <$> createTarget res msaa 1 sceneFmt sceneDpthFmt
   refractBuffer <- makeBufferTexture halfRes sceneFmt 6
-  backfaceTgt <- explodeLefts <$> createTarget halfRes MsNone 1 GL_RGBA16F sceneDpthFmt
+  backfaceTgt <- yolo <$> createTarget halfRes MsNone 1 GL_RGBA16F sceneDpthFmt
   guiPln <- makeBufferTexture res GL_RGBA8 1
   ssaoTx <- makeBufferTextureNonResident res GL_RG16F 1
-  preTgt <- explodeLefts <$> depthShareTarget sceneTarget
+  preTgt <- yolo <$> depthShareTarget sceneTarget
   let msDefines = if msaa /= MsNone then ["multisample"] else []
 
-  downresProg <- explodeLefts <$> loadKernelFromFile'WithDefines
+  downresProg <- yolo <$> loadKernelFromFile'WithDefines
     "data/shaders/downres.comp" msDefines
 
   downresTexProg <- if msaa == MsNone
     then pure downresProg
-    else explodeLefts <$> loadKernelFromFile "data/shaders/downres.comp"
+    else yolo <$> loadKernelFromFile "data/shaders/downres.comp"
 
-  presentProg <- explodeLefts <$> loadRenderProgramFromFiles'WithDefines
+  presentProg <- yolo <$> loadRenderProgramFromFiles'WithDefines
     "present.vert" "present.frag" msDefines "present" Nothing
 
-  transProg <- explodeLefts <$> loadRenderProgramFromFiles'WithDefines
+  transProg <- yolo <$> loadRenderProgramFromFiles'WithDefines
     "static_scene.vert" "static_scene.frag" ["transparency"] "static_scene_transp" Nothing
-  backfaceProg <- explodeLefts <$> loadRenderProgramFromFiles'WithDefines
+  backfaceProg <- yolo <$> loadRenderProgramFromFiles'WithDefines
     "static_scene.vert" "static_scene.frag" ["back_faces"] "static_scene_backface" Nothing
 
-  foliageProg <- explodeLefts <$>
+  foliageProg <- yolo <$>
     loadRenderProgramFromFiles'WithDefines
       "static_scene.vert" "static_scene.frag" ["foliage"] "static_scene_foliage" Nothing
-  foliageShadowProg <- explodeLefts <$>
+  foliageShadowProg <- yolo <$>
     loadRenderProgramFromFiles'WithDefines
       "static_shadows.vert" "static_shadows.frag" ["foliage"] "static_scene_foliage_shadow" Nothing
 
   -- ssao.comp : uses a sphere of points
   -- hbao.comp : finds horizons in directions
-  ssaoProg <- explodeLefts <$>
+  ssaoProg <- yolo <$>
     loadKernelFromFile'WithDefines "data/shaders/hbao.comp" msDefines
 
   targets <- liftIO $ newIORef $ SceneTargets
@@ -562,11 +564,10 @@ bindInstanceStorage instances = do
 
 
 sunlightProj :: M44 Float
-sunlightProj = orthoLight (size*2) (size*2) 64
+sunlightProj = orthoLight (size*2) (size*2) depth
   where
     size = 8
-    near = -16
-    far = -48
+    depth = 64
 
 makePos :: Num a => V3 a -> V4 a
 makePos (V3 x y z) = V4 x y z 1
