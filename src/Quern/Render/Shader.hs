@@ -24,7 +24,6 @@ import Data.Char (toLower, toUpper)
 import Data.Containers.ListUtils (nubOrd)
 import Data.Foldable (traverse_)
 import qualified Data.Text as T (pack)
-import qualified Data.Vector as V
 import SDL as SDL
 
 import Graphics.GL.Core45

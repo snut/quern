@@ -21,6 +21,7 @@ module Quern.Render.Internal.StorageBuffer
   , GLuint
   , GLenum
   , GLbitfield
+  , allocateObject
   ) where
 
 
@@ -36,6 +37,9 @@ import Quern.Render.GL
 
 -- | A 'StorageBuffer' represents a mutable buffer object resident in GPU memory.
 -- It is written to in an append-only fashion.
+--
+-- TODO: Consider moving the _storeReadable to a phantom type parameter here,
+-- which most things can be polymorphic on. Gives some safety in trying to read
 data StorageBuffer a = StorageBuffer
   { _storeCapacity :: !Int
   , _storeUsage :: !(IORef Int)
@@ -66,7 +70,8 @@ newBufferObject target size flags = liftIO $ do
   glBindBuffer target 0
   pure object
 
-
+-- | Note that this expects the pointer to reference at least enough data to fill
+-- the newly-allocated buffer
 newBufferObjectFromPtr :: MonadIO m => GLenum -> Int -> GLbitfield -> Ptr () -> m GLuint
 newBufferObjectFromPtr target size flags dataPtr = liftIO $ do
   object <- alloca $ \bptr -> glGenBuffers 1 bptr *> peek bptr
@@ -75,14 +80,20 @@ newBufferObjectFromPtr target size flags dataPtr = liftIO $ do
   glBindBuffer target 0
   pure object
 
+storageNewDebug :: forall a m. (Storable a, MonadIO m) => GLenum -> Int -> m (StorageBuffer a)
+storageNewDebug = storageNew'Impl True
+
 storageNew :: forall a m. (Storable a, MonadIO m) => GLenum -> Int -> m (StorageBuffer a)
-storageNew target capacity = do
+storageNew = storageNew'Impl False
+
+storageNew'Impl :: forall a m. (Storable a, MonadIO m) => Bool -> GLenum -> Int -> m (StorageBuffer a)
+storageNew'Impl dbg target capacity = do
   usage <- liftIO $ newIORef 0
   let flags = GL_DYNAMIC_STORAGE_BIT .|. GL_MAP_WRITE_BIT
-      _flagsDebug = flags .|. GL_MAP_READ_BIT
+      flagsDebug = flags .|. GL_MAP_READ_BIT
       elemSize = sizeOf (undefined :: a)
 
-  object <- newBufferObject target (capacity * elemSize) flags
+  object <- newBufferObject target (capacity * elemSize) (if dbg then flagsDebug else flags)
 
   sync <- liftIO $ fence >>= newIORef
   pure $! StorageBuffer
@@ -92,7 +103,7 @@ storageNew target capacity = do
     , _storeElemSize = elemSize
     , _storeTarget = target
     , _storeSync = sync
-    , _storeReadable = False -- if true, use _flagsDebug
+    , _storeReadable = dbg
     }
 
 debugStorageTake :: forall a m. (Storable a, MonadIO m) => StorageBuffer a -> Int -> m (VS.Vector a)
@@ -140,5 +151,6 @@ storageFreeSpace storage = (_storeCapacity storage -) <$> storageUsedSpace stora
 storageUsedSpace :: MonadIO m => StorageBuffer a -> m Int
 storageUsedSpace storage = liftIO $ readIORef (_storeUsage storage)
 
+-- Moves the write position to the beginning
 storageClear :: MonadIO m => StorageBuffer a -> m ()
 storageClear store = liftIO $ writeIORef (_storeUsage store) 0

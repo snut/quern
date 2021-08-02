@@ -301,16 +301,14 @@ meshStorageReport storage = liftIO $ do
 
 meshStorageNew :: MonadIO m => m StaticMeshStorage
 meshStorageNew = do
-    vtx <- storageNew GL_ARRAY_BUFFER vtxCapacity --staticVertexSize
-    idx <- storageNew GL_ELEMENT_ARRAY_BUFFER idxCapacity --staticIndexSize
-    mdata <- storageNew GL_SHADER_STORAGE_BUFFER dataCapacity --aabbSize --meshDataSize
+    vtx <- storageNew GL_ARRAY_BUFFER vtxCapacity
+    idx <- storageNew GL_ELEMENT_ARRAY_BUFFER idxCapacity
+    mdata <- storageNew GL_SHADER_STORAGE_BUFFER dataCapacity
     buffers <- liftIO $ newIORef mempty
-    --glVAO <- liftIO $ alloca $ \ptr -> glGenVertexArrays 1 ptr *> peek ptr
     glVAO <- allocateObject (glGenVertexArrays 1)
     -- this named path triggers GL_INVALID_OPERATION; why?
+    -- probably needs to be bound at least once first
     --staticVertexFormat glVAO
-    --glVertexArrayVertexBuffer glVAO 0 (_storeObject vtx) 0 vtxStride
-    --glVertexArrayElementBuffer glVAO (_storeObject idx)
     glBindVertexArray glVAO
     staticVertexFormatBound
     glBindVertexBuffer 0 (_storeObject vtx) 0 vtxStride
@@ -382,7 +380,6 @@ storeMeshes storage meshPath vertices mtlKeyIndices
                       glErrorToLog "storeMesh.storeIndices"
                       let pos0 = _vertexPos (vertices VS.! fromIntegral (VS.head indices))
                           aabb = VS.foldl' (\bb ix -> expand (_vertexPos (vertices VS.! fromIntegral ix)) bb) (degenerate pos0) indices
-                          --mdata = MeshData aabb (MeshLOD (fromIntegral idxCount) (fromIntegral idxOff))
                       mdataIdx <- liftIO $ with aabb $ unsafeStore (_meshStoreMeshData storage) 1
                       glErrorToLog "storeMesh.storeMeshData"
                       let buf = MeshSlice
@@ -398,48 +395,6 @@ storeMeshes storage meshPath vertices mtlKeyIndices
                       liftIO $ modifyIORef' (_meshStoreBuffers storage) nestedInsert
                       pure $! Just $! (MeshKey (meshPath, mtlKey), buf)
           pure is
-
-{-
-
-
-          freeIdx <- storageFreeSpace (_meshStoreIndex storage)
-          freeMsh <- storageFreeSpace (_meshStoreMeshData storage)
-          let indicesValid = VS.all (< vtxCount') indices
-           || freeIdx < idxCount || not indicesValid || freeMsh < 1
-            then do
-              loggingString $! unlines
-                [ "Invalid mesh data!"
-                , "  Vertices: " ++ show vtxCount ++ " / " ++ show freeVtx
-                , "   Indices: " ++ show idxCount ++ " / " ++ show freeIdx
-                , "  MeshData: " ++ show freeMsh
-                , "  Idx sane: " ++ show indicesValid
-                ]
-              pure Nothing
-            else do
-              idxOff <- storageUsedSpace (_meshStoreIndex storage)
-              mshOff <- storageUsedSpace (_meshStoreMeshData storage)
-              loggingString $ "Storing new mesh at: vertex " ++ show vtxOff ++ ", index " ++ show idxOff ++ ", mesh " ++ show mshOff
-              loggingString $ unwords ["Free space: vertex", show freeVtx, "index", show freeIdx, "mesh", show freeMsh]
-              let indices' = VS.map (+ offset) indices
-
-              glErrorToLog "storeMesh.beforeStore"
-              glErrorToLog "storeMesh.storeIndices"
-              let vtxPos0 = _vertexPos (vertices VS.! 0)
-                  aabb = VS.foldl' (\bb vtx -> expand (_vertexPos vtx) bb) (degenerate vtxPos0) vertices
-                  mdata = MeshData aabb (MeshLOD (fromIntegral idxCount) (fromIntegral idxOff))
-              --mdataIdx <- with mdata $ \ptr -> unsafeStore (_meshStoreMeshData storage) ptr 1
-              mdataIdx <- liftIO $ with aabb $  unsafeStore (_meshStoreMeshData storage) 1
-              glErrorToLog "storeMesh.storeMeshData"
-              loggingString $ "Storing mesh data [" ++ show mdataIdx ++ "]:\n\t\t" ++ show mdata
-              let buf = MeshSlice { _meshSliceIndexStart = idxOff, _meshSliceIndexCount = idxCount, _meshSliceDataIndex = mdataIdx }
-              loggingString $ "Storing slice " ++ show buf
-              liftIO $ modifyIORef' (_meshStoreBuffers storage) (M.insert key buf)
-              pure $! Just $! buf
-  where
-    vtxCount = VS.length vertices
-    idxCount = VS.length indices
-    vtxCount' = fromIntegral vtxCount
--}
 
 
 -- can be stored in buffer bound to GL_DRAW_INDIRECT_BUFFER

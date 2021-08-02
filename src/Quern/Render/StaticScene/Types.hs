@@ -12,6 +12,7 @@ import Quern.Render.Target
 --import Quern.Render.Texture
 import Quern.Render.Shader
 import Quern.Render.StaticScene.SceneStorage
+import Quern.Render.Particles.CpuParticles
 
 data StaticSceneDebug = StaticSceneDebug
   { _sceneDebugVB :: !GLuint
@@ -72,6 +73,8 @@ data StaticScene = StaticScene
   -- additive:
   --   no depth write
   , _sceneAdditivePass :: !ScenePass
+
+  , _sceneCpuParticles :: !CpuParticleSystem
 
   , _sceneDebug :: !(Maybe StaticSceneDebug)
 

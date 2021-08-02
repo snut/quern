@@ -48,6 +48,13 @@ data Camera = Camera
 
 makeLenses ''Camera
 
+cameraBasis :: Camera -> M33 Float
+cameraBasis cam = V3 x y z
+  where
+    x = normalize (z `cross` _cameraUp cam)
+    y = normalize (x `cross` z)
+    z = normalize (_cameraTarget cam - _cameraPosition cam)
+
 cameraView :: Camera -> M44 Float
 cameraView cam = lookAt (_cameraPosition cam) (_cameraTarget cam) (_cameraUp cam)
 

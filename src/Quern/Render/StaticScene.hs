@@ -83,6 +83,7 @@ import Quern.Render.StaticScene.SceneStorage
 import Quern.Render.StaticScene.Types as SceneTypes
 import Quern.Render.Target
 import Quern.Render.Texture
+import Quern.Render.Particles.CpuParticles
 import Quern.Types
 
 class HasStaticScene a where
@@ -424,6 +425,8 @@ newStaticScene envPath resolution msaa = do
   ssaoProg <- yolo <$>
     loadKernelFromFile'WithDefines "data/shaders/hbao.comp" msDefines
 
+  cpuPcls <- newCpuParticleSystem
+
   targets <- liftIO $ newIORef $ SceneTargets
     { _mainTarget = sceneTarget
     , _preTarget = preTgt
@@ -452,6 +455,7 @@ newStaticScene envPath resolution msaa = do
     , _sceneDownresTextureProgram = downresTexProg
     , _sceneSsaoProgram = ssaoProg
     , _scenePresentProgram = presentProg
+    , _sceneCpuParticles = cpuPcls
     }
 
 cullPass :: (HasStaticScene env, HasLogging env) => Camera -> ScenePass -> Quern env ()
@@ -721,8 +725,15 @@ drawScene renderTime cam = do
 
     captureToTarget sceneTarget $ \_ -> do
       drawPass cam (_sceneTransparentPass scene) "transparent" (Just bindTransparents) True
+      glDepthMask GL_FALSE
+      drawPass cam (_sceneAdditivePass scene) "additive" Nothing False
+      drawCpuParticleSystem (_sceneCpuParticles scene) (cameraViewProjection cam) (cameraBasis cam)
+      glDepthMask GL_TRUE
 
     -- post process, tonemap, present
+    -- note these rely on there being a quad in a bound vertex buffer
+    bindForDraw cam False
+
     glDepthMask GL_FALSE
     useProgram (_scenePresentProgram scene)
     -- bind main target as texture
@@ -899,5 +910,6 @@ reloadScenePrograms scene = do
   _ <- reloadProgram (_sceneDownresTextureProgram scene)
   _ <- reloadProgram (_sceneSsaoProgram scene)
   _ <- reloadProgram (_scenePresentProgram scene)
+  _ <- reloadProgram (_cpuParticleProgram $ _sceneCpuParticles scene)
   logging "Reloaded all shaders"
   pure ()

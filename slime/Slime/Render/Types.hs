@@ -44,6 +44,7 @@ data RenderState = RenderState
   , _input :: !Input
   , _currentFrame :: !Int
   , _lastRenderTime :: !Double
+  , _lastDeltaTime :: !Float
   , _animations :: !(Map Entity (Animation Instance))
   , _idleAnimations :: !(Map Entity (Animation Instance))
   , _instanceAnimations :: !(Map InstanceIndex (Animation Instance, Instance))

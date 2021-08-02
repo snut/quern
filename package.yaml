@@ -18,6 +18,8 @@ extra-source-files:
 # common to point users to the README.md file.
 description:         Please see the README on GitHub at <https://github.com/snut/quern#readme>
 
+#nb: chcp 65001 for windows to UTF8 the console
+
 dependencies:
 - base >= 4.7 && < 5
 - aeson
@@ -46,6 +48,7 @@ dependencies:
 - mtl
 - parsec
 - persist
+- primitive
 - pure-zlib # used for FBX decoding
 - random
 - recursion-schemes

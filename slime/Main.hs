@@ -56,6 +56,8 @@ import Quern.Audio
 import Quern.Render.Text
 import Quern.Physics.AxisAlignedBox (mkAABox)
 
+import Quern.Render.Particles.CpuParticles (updateCpuParticleSystem, enqueuePclSpawn)
+
 data WindowConfig = WindowConfig
   { _windowFullscreen :: !Bool
   , _windowMSAA :: !Bool
@@ -170,6 +172,16 @@ drawDebugGui = do
 -- | Main loop
 renderLoop :: Quern RenderContext ()
 renderLoop = do
+  -- pcl stuff!
+  pcls <- view (staticScene.sceneCpuParticles)
+  lastDt <- magnify renderState $ do
+    inp <- use input
+    ldt <- use lastDeltaTime
+    when (buttonHeld KeycodeL (inp^.inputKeyboard.keyboardButtons)) $
+      enqueuePclSpawn pcls (V3 4 4 2, V3 1 1 3, 8)
+    pure ldt
+  updateCpuParticleSystem pcls lastDt
+
   -- handle game-side stuff
   acceptGameCommands
   -- update transforms and such
@@ -209,7 +221,9 @@ renderLoop = do
         c <- use debugCamera
         t0 <- use lastRenderTime
         lastRenderTime .= tD
-        pure (c, realToFrac (tD-t0))
+        let dt = realToFrac $ tD - t0
+        lastDeltaTime .= dt
+        pure (c, dt)
       -- send relevant events to game
       case dcam of
         Just c -> updateDebugCamera c dt
@@ -302,6 +316,11 @@ enqueueGameThread x = do
   q <- view (gameThread.gameThreadFromInput)
   liftIO $ atomically (writeTQueue q x)
 
+enqueuePclSpawn' :: (V3 Float, V3 Float, Int) -> Quern RenderContext ()
+enqueuePclSpawn' sp = do
+  pcls <- view (scene.sceneCpuParticles)
+  enqueuePclSpawn pcls sp
+
 handleCommand :: ToRender -> Quern RenderContext ()
 handleCommand (Move e fromTile toTile) = do
   ents <- _entityMap <$> mutGet gameData
@@ -340,7 +359,7 @@ handleCommand (Killed e atker) = do
             Just (RI _ atInst) -> addAnim atk (attackAnim atInst inst)
             Nothing -> pure ()
         Nothing -> pure ()
-
+      enqueuePclSpawn' (inst^.instancePosition + V3 0 0 1, V3 0 0 1, 32)
       a <- magnify renderState $ do
         an <- use (animations . at e)
         animations . at e .= Nothing
@@ -354,10 +373,13 @@ handleCommand (Killed e atker) = do
 handleCommand (HitWithDamage e _ atk) = do
   ents <- _entityMap <$> mutGet gameData
   case M.lookup e ents of
-    Just (RI _ to) ->
+    Just (RI _ to) -> do
+
       case M.lookup atk ents of
-        Just (RI _ from) -> addAnim atk (attackAnim from to)
-        _ -> pure ()
+        Just (RI _ from) -> do
+          enqueuePclSpawn' (to^.instancePosition + V3 0 0 1, V3 0 0 1.5 + to^.instancePosition - from^.instancePosition, 64)
+          addAnim atk (attackAnim from to)
+        _ -> enqueuePclSpawn' (to^.instancePosition + V3 0 0 1, 0, 32)
     _ -> pure ()
   addAnim e (squidge `after` idAnimation (0.3 * 0.25))
 handleCommand (Missed dfd atk) = do
@@ -502,7 +524,7 @@ renderInitContext window0 slib lvl msaa = do
   input0 <- initInput (Just window0)
   cfg <- liftIO $ catchIOError (decodeFileStrict "./data/render_config.json") (\_ -> pure Nothing)
   let cam = initCam (fromMaybe initCfg cfg) (V2 4 3)
-  st <- liftIO $ newIORef (RenderState cam input0 0 t0 mempty mempty mempty Nothing)
+  st <- liftIO $ newIORef (RenderState cam input0 0 t0 0 mempty mempty mempty Nothing)
   ents <- liftIO $ newIORef (RenderGameData mempty mempty Nothing Nothing Nothing)
   guiProg <- either error id <$> loadKernelFromFile "data/shaders/sdf2d.comp"
   gthread <- startGameLoop lvl 0xbeef

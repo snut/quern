@@ -11,10 +11,11 @@ class HasTransform a where
   position :: Lens' a (V3 Float)
   scale :: Lens' a (V3 Float)
 
-
+-- | I don't much like this, a pos+rot+scale+inverse-scale representation would
+-- be nicer in many ways.
 data Instance = Instance
   { _instanceTransform :: !(V3 (V4 Float))
-  , _instanceTint :: !(V4 Float)
+  , _instanceTint :: !(V4 Float) -- this is just padding, really
   } deriving (Eq, Ord, Show, Read)
 
 transformPos :: Instance -> V3 Float -> V3 Float

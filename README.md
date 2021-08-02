@@ -4,7 +4,7 @@ This is a little rendering framework (`Quern`), and a game using it (thus far im
 
 The rendering framework uses OpenGL 4.5 with bindless texture extensions to support rendering many meshes with very few draw calls. Whether or not this is necessary or practical is debatable.
 
-The game is intended to be a simple tactical/deck-building game, themed around slime colonies in a post-human fantasy setting.
+The game is intended to be a simple turn-based tactics game. Right now there's not much game, due to still lacking a lot of essential things.
 
 ## Implementation notes
 
@@ -34,8 +34,8 @@ The options flags are provided after a leading double-dash (disambiguating them 
 
 ### Options
 
-1. `-m` / `--msaa` : start the game with multi-sample antialiasing
-2. `-f` / `--fullscreen` : start the game in fullscreen mode
+1. `-m` / `--msaa` : start the game with multi-sample antialiasing (2x)
+2. `-f` / `--fullscreen` : start the game in fullscreen rather than windowed mode
 3. `-a` / `--audio` : start the audio subsystem, this defaults to off as it is underdeveloped
 
 ### Debug keybinds in game

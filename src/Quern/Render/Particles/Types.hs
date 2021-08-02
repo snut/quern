@@ -30,30 +30,50 @@ newtype ParticleTypeIndex = PTI Word16 deriving (Eq, Ord, Show, Storable)
 invalidParticleType :: ParticleTypeIndex
 invalidParticleType = PTI maxBound
 
+
+-- maybe this needs to be a bunch of separate streams, but then indexing becomes bleh
 data GPUParticle = GPUParticle
-  { _gpuParticlePos_Life :: !(V4 Float)
-  , _gpuParticleVel_Rot :: !(V4 Float)
+  { _gpuParticlePos :: !(V3 Float)
+  , _gpuParticleLife :: !Half
   , _gpuParticleType :: !ParticleTypeIndex
+  , _gpuParticleRot :: !(Quaternion Half)
+  , _gpuParticleVel :: !(V3 Half)
   , _gpuParticleSeed :: !Word16
   }
+pcl0 :: GPUParticle
+pcl0 = GPUParticle
+  { _gpuParticlePos = pure 0
+  , _gpuParticleLife = 0
+  , _gpuParticleType = invalidParticleType
+  , _gpuParticleRot = Quaternion 1 (pure 0)
+  , _gpuParticleVel = pure 0
+  , _gpuParticleSeed = 0
+  }
 instance Storable GPUParticle where
-  sizeOf ~(GPUParticle p v i sd) = sizeOf p + sizeOf v + sizeOf i + sizeOf sd
+  sizeOf ~(GPUParticle p l t r v sd) = sizeOf p + sizeOf l + sizeOf t + sizeOf r + sizeOf v + sizeOf sd
   alignment _ = alignment (undefined :: V4 Float)
   peek ptr = do
-    let v4 = sizeOf (undefined :: V4 Float)
-        w16 = sizeOf (undefined :: Word16)
     pos <- peek (castPtr ptr)
-    vel <- peek (ptr `plusPtr` v4)
-    idx <- peek (ptr `plusPtr` (v4+v4))
-    sd  <- peek (ptr `plusPtr` (v4+v4+w16))
-    pure $ GPUParticle pos vel idx sd
-  poke ptr (GPUParticle pos vel idx sd) = do
-    let v4 = sizeOf (undefined :: V4 Float)
-        w16 = sizeOf (undefined :: Word16)
-    poke (castPtr ptr) pos
-    poke (ptr `plusPtr` v4) vel
-    poke (ptr `plusPtr` (v4+v4)) idx
-    poke (ptr `plusPtr` (v4+v4+w16)) sd
+    lif <- peek (ptr `plusPtr` 12)
+    typ <- peek (ptr `plusPtr` 14)
+    rot <- peek (ptr `plusPtr` 16)
+    vel <- peek (ptr `plusPtr` 24)
+    sdd <- peek (ptr `plusPtr` 30)
+    pure $ GPUParticle
+      { _gpuParticlePos = pos
+      , _gpuParticleLife = lif
+      , _gpuParticleType = typ
+      , _gpuParticleRot = rot
+      , _gpuParticleVel = vel
+      , _gpuParticleSeed = sdd
+      }
+  poke ptr pcl = do
+    poke (castPtr ptr)      $ _gpuParticlePos pcl
+    poke (ptr `plusPtr` 12) $ _gpuParticleLife pcl
+    poke (ptr `plusPtr` 14) $ _gpuParticleType pcl
+    poke (ptr `plusPtr` 16) $ _gpuParticleRot pcl
+    poke (ptr `plusPtr` 24) $ _gpuParticleVel pcl
+    poke (ptr `plusPtr` 30) $ _gpuParticleSeed pcl
 
 data DistShape
   = DistBall
@@ -134,10 +154,11 @@ data ParticleType = ParticleType
   , _particleTypeCoeffRest :: !Half
   , _particleTypeDrag :: !Half  -- 4 x half, 8b
   , _particleTypeSize :: !(V4 Half) -- 16b
-  , _particleTypeColour :: !(V4 (V4 Half)) -- spawn/mid/death colour bezier, 48 +32b
+  , _particleTypeColour :: !(V4 (V4 Half)) -- spawn/mid1/mid2/death colour bezier, 48 +32b
   , _particleTypeColourRange :: !(V2 (V4 Half)) -- randomisation offset begin/end, 64 +16b
   , _particleTypeCollideSwitch :: !ParticleTypeIndex -- 66 +2b
   , _particleTypeFadeSwitch :: !ParticleTypeIndex -- 68 +2b particle type to use on lifespan expire
+--  , _particleTypeAlignment :: !Word16 -- view plane, camera position, x/y/z-aligned billboard, velocity facing, world rotation
   } deriving (Eq, Ord, Show)
 
 instance Storable ParticleType where
