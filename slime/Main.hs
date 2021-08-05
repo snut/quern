@@ -143,10 +143,11 @@ modeDesc = M.fromList
 drawDebugGui :: Quern RenderContext ()
 drawDebugGui = do
   rt <- view (renderGui.renderText)
-  (cam, usingDebugCamera) <- magnify renderState $ do
+  (cam, usingDebugCamera, paused) <- magnify renderState $ do
     c <- use camera
     dc <- use debugCamera
-    pure (maybe c id dc, isJust dc)
+    p <- use renderTimePaused
+    pure (maybe c id dc, isJust dc, p)
   --addGuiBox :: (MonadIO m) => RenderText -> AABox V2 Int -> Int -> Int -> V4 Word8 -> V4 Word8 -> m ()
 
   when usingDebugCamera $ do
@@ -154,6 +155,9 @@ drawDebugGui = do
     addString rt (V2 24 32) 0.5 (show (_cameraPosition cam) <> "  [P]")
     addString rt (V2 24 64) 0.5 $ "Mode " <> show dbgMode <> ": " <> maybe "Unknown" id (M.lookup dbgMode modeDesc)
     addString rt (V2 24 96) 0.5 $ "F1: reset mode, F2/F3: +/- mode, F4: reload shaders"
+
+    when paused $
+      addString rt (V2 24 128) 0.5 $ "PAUSED"
 
     -- show 'console'
     when False $ do
@@ -172,6 +176,10 @@ drawDebugGui = do
 -- | Main loop
 renderLoop :: Quern RenderContext ()
 renderLoop = do
+  cam <- magnify renderState $ do
+    c <- use camera
+    dc <- use debugCamera
+    pure $ maybe c id dc
   -- pcl stuff!
   pcls <- view (staticScene.sceneCpuParticles)
   lastDt <- magnify renderState $ do
@@ -180,7 +188,7 @@ renderLoop = do
     when (buttonHeld KeycodeL (inp^.inputKeyboard.keyboardButtons)) $
       enqueuePclSpawn pcls (V3 4 4 2, V3 1 1 3, 8)
     pure ldt
-  updateCpuParticleSystem pcls lastDt
+  updateCpuParticleSystem pcls lastDt (_cameraPosition cam)
 
   -- handle game-side stuff
   acceptGameCommands
@@ -188,10 +196,6 @@ renderLoop = do
   runAnims
   -- clear buffer, update cameras
   liftIO clear
-  cam <- magnify renderState $ do
-    c <- use camera
-    dc <- use debugCamera
-    pure $ maybe c id dc
   -- check for window resize
   view (renderGui.renderText) >>= handleViewportResize cam
 
@@ -222,7 +226,8 @@ renderLoop = do
         t0 <- use lastRenderTime
         lastRenderTime .= tD
         let dt = realToFrac $ tD - t0
-        lastDeltaTime .= dt
+        paused <- use renderTimePaused
+        lastDeltaTime .= if paused then 0 else dt
         pure (c, dt)
       -- send relevant events to game
       case dcam of
@@ -489,13 +494,19 @@ updateRenderState evs = do
   let cam' = camResize inp cam
   camera .= cam'
 
-  if buttonUp KeycodeP (inp^.inputKeyboard.keyboardButtons)
+  dbg <- if buttonUp KeycodeP (inp^.inputKeyboard.keyboardButtons)
     then case dbgCam of
-      Just _ -> debugCamera .= Nothing
-      Nothing -> debugCamera .= Just cam'
+      Just _ -> (debugCamera .= Nothing) *> pure False
+      Nothing -> (debugCamera .= Just cam') *> pure True
     else case dbgCam of
-      Just c -> when (cam'^.cameraResized) (debugCamera .= Just (camResize inp c))
-      Nothing -> pure ()
+      Just c -> when (cam'^.cameraResized) (debugCamera .= Just (camResize inp c)) *> pure True
+      Nothing -> pure False
+
+  pause <- use renderTimePaused
+  when (dbg && buttonUp KeycodeK (inp^.inputKeyboard.keyboardButtons)) $ do
+    renderTimePaused .= not pause
+
+  when (not dbg && pause) (renderTimePaused .= False)
 
   currentFrame += 1
 
@@ -524,7 +535,18 @@ renderInitContext window0 slib lvl msaa = do
   input0 <- initInput (Just window0)
   cfg <- liftIO $ catchIOError (decodeFileStrict "./data/render_config.json") (\_ -> pure Nothing)
   let cam = initCam (fromMaybe initCfg cfg) (V2 4 3)
-  st <- liftIO $ newIORef (RenderState cam input0 0 t0 0 mempty mempty mempty Nothing)
+  st <- liftIO $ newIORef $ RenderState
+                              { _camera = cam
+                              , _input = input0
+                              , _currentFrame = 0
+                              , _lastRenderTime = t0
+                              , _lastDeltaTime = 0
+                              , _animations = mempty
+                              , _idleAnimations = mempty
+                              , _instanceAnimations = mempty
+                              , _debugCamera = Nothing
+                              , _renderTimePaused = False
+                              }
   ents <- liftIO $ newIORef (RenderGameData mempty mempty Nothing Nothing Nothing)
   guiProg <- either error id <$> loadKernelFromFile "data/shaders/sdf2d.comp"
   gthread <- startGameLoop lvl 0xbeef
@@ -533,7 +555,19 @@ renderInitContext window0 slib lvl msaa = do
   rtext <- newRenderText "data/fonts/open_sans.fnt" initRes
   rgui <- liftIO $ RenderGui <$> newIORef [] <*> pure rtext <*> newIORef Nothing
   -- hmm, getting a bit cumbersome
-  pure $ RenderContext window0 logHdl scene0 texLib0 st gui gthread ents t0 slib rgui
+  pure $ RenderContext
+    { _window = window0
+    , _logHandle = logHdl
+    , _scene = scene0
+    , _texLib = texLib0
+    , _renderState = st
+    , _guiContext = gui
+    , _gameThread = gthread
+    , _gameData = ents
+    , _renderStartTime = t0
+    , _audio = slib
+    , _renderGui = rgui
+    }
 
 renderTime :: Quern RenderContext Double
 renderTime = do

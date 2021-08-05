@@ -20,13 +20,12 @@ import qualified Data.Vector.Storable.Mutable as VSM
 import Foreign hiding (rotate)
 import Data.Foldable (traverse_, foldlM)
 import Quern.Render.Shader
-import qualified Data.ByteString.Char8 as B8 (unpack)
+import Quern.Render.Texture
 import Data.IORef
 import Control.Monad.Primitive (PrimState)
 import Control.Lens (makeLenses, (^.), (*~), (&))
-
 import Control.Concurrent.STM
-
+import qualified Data.Vector.Algorithms.Tim as VA
 
 
 -- Generating useful values for particles
@@ -81,13 +80,15 @@ data Particle = Pcl
   , _pclSize :: !(V3 Float)
   , _pclRot :: !(Quaternion Float)
   , _pclTtl :: !Float
+  , _pclSeed :: !Word32
+  , _pclLifespan :: !Float
   } deriving (Eq, Ord, Show)
 
 makeLenses ''Particle
 
 
 instance Storable Particle where
-  sizeOf _ = 12 * 4 + 16 + 4
+  sizeOf _ = 12 * 4 + 16 + 4 + 4 + 4
   alignment _ = alignment (0 :: Float)
   peek ptr = Pcl
     <$> peek (castPtr ptr) -- pos
@@ -95,7 +96,9 @@ instance Storable Particle where
     <*> peek (plusPtr ptr 24) -- ang. vel
     <*> peek (plusPtr ptr 36) -- size
     <*> peek (plusPtr ptr 48) -- rot
-    <*> peek (plusPtr ptr 64) -- life
+    <*> peek (plusPtr ptr 64) -- ttl
+    <*> peek (plusPtr ptr 68) -- seed
+    <*> peek (plusPtr ptr 72) -- lifespan
   poke ptr pcl = do
     poke (castPtr ptr) (_pclPos pcl)
     poke (plusPtr ptr 12) (_pclVel pcl)
@@ -103,6 +106,8 @@ instance Storable Particle where
     poke (plusPtr ptr 36) (_pclSize pcl)
     poke (plusPtr ptr 48) (_pclRot pcl)
     poke (plusPtr ptr 64) (_pclTtl pcl)
+    poke (plusPtr ptr 68) (_pclSeed pcl)
+    poke (plusPtr ptr 72) (_pclLifespan pcl)
 
 -- evolving particles
 updateParticle :: Float -> Particle -> Particle
@@ -124,13 +129,17 @@ spawnParticle pos vel dt = do
   p <- distV3 pos
   v <- distV3 vel
   ang <- state $ uniformR angularR
+  sd <- state random
+  let lifespan = 4
   let pcl0 = Pcl
               { _pclPos = p
               , _pclVel = v
               , _pclAngVel = 0
               , _pclSize = 0.125
               , _pclRot = axisAngle (V3 0 0 1) ang
-              , _pclTtl = 4
+              , _pclTtl = lifespan
+              , _pclSeed = sd
+              , _pclLifespan = lifespan
               }
   pure $ updateParticle dt pcl0
 
@@ -154,10 +163,15 @@ data PclInstance = PclInstance
   , _pclInstSize :: !(V3 Float)
   , _pclInstFade :: !Float
   , _pclInstRot :: !(Quaternion Float)
+  -- packed
+  , _pclInstSeed :: !Word32
+  , _pclInstClr :: !(V4 Word8)
+  , _pclInstBright :: !Float
+  , _pclInstLifespan :: !Float
   }
 
 instance Storable PclInstance where
-  sizeOf _ = sizeOf (0 :: Float) * (4+4+4)
+  sizeOf _ = sizeOf (0 :: Float) * (4+4+4+4)
   alignment _ = alignment (undefined :: V3 Float)
   peek ptr = PclInstance
     <$> peek (castPtr ptr)
@@ -165,15 +179,29 @@ instance Storable PclInstance where
     <*> peek (plusPtr ptr 16)
     <*> peek (plusPtr ptr 28)
     <*> peek (plusPtr ptr 32)
-  poke ptr (PclInstance pos age sz fade rot) = do
+    -- individual properties
+    <*> peek (plusPtr ptr 48)
+    <*> peek (plusPtr ptr 52)
+    <*> peek (plusPtr ptr 56)
+    <*> peek (plusPtr ptr 60)
+
+  poke ptr (PclInstance pos age sz fade rot seed clr bright life) = do
     poke (castPtr ptr) pos
     poke (plusPtr ptr 12) age
     poke (plusPtr ptr 16) sz
     poke (plusPtr ptr 28) fade
     poke (plusPtr ptr 32) rot
+    poke (plusPtr ptr 48) seed
+    poke (plusPtr ptr 52) clr
+    poke (plusPtr ptr 56) bright
+    poke (plusPtr ptr 60) life
+
 
 pclInstance :: Particle -> PclInstance
-pclInstance pcl = PclInstance (_pclPos pcl) (_pclTtl pcl) (_pclSize pcl) 0.1 (_pclRot pcl)
+pclInstance pcl = PclInstance (_pclPos pcl) (_pclTtl pcl) (_pclSize pcl) 0.1 (_pclRot pcl) (_pclSeed pcl) clr bright (_pclLifespan pcl)
+  where
+    clr = pure 0xff
+    bright = 1.0
 
 type PclSpawnParams = (V3 Float, V3 Float, Int)
 
@@ -187,6 +215,7 @@ data CpuParticleSystem = CpuParticleSystem
   , _cpuParticleBuffer :: !(VSM.MVector (PrimState IO) Particle) --
   , _cpuParticleInstanceBuffer :: !(VSM.MVector (PrimState IO) PclInstance) -- VSM.unsafeWith allows using this for buffer writes
   , _cpuParticleSpawning :: !(TQueue PclSpawnParams)
+  , _cpuParticleTexture :: !Texture -- a simple test atlas
   }
 
 enqueuePclSpawn :: MonadIO m => CpuParticleSystem -> PclSpawnParams -> m ()
@@ -204,6 +233,9 @@ cpuParticleMax = 65536
 
 newCpuParticleSystem :: (MonadReader env m, HasLogging env, MonadIO m) => m CpuParticleSystem
 newCpuParticleSystem = do
+  let yolo :: Show a => Either a b -> b
+      yolo = either (error.show) id
+
   logging "newCpuParticleSystem"
   let vtxCapacity = 9
       idxCapacity = 4 * 2 * 3
@@ -242,17 +274,14 @@ newCpuParticleSystem = do
   liftIO $ VS.unsafeWith cpuParticleIndices $ \ptr ->
     unsafeStore idx idxCapacity ptr *> pure ()
 
-  progE <- loadRenderProgramFromFiles "cpu_particle.vert" "cpu_particle.frag" "cpu_particle" Nothing
-  prog <- case progE of
-    Left err -> do
-      loggingString $ "Failed to compile cpu particle program: " <> B8.unpack err
-      error "cpu particle program exploded"
-    Right p -> pure p
+  prog <- yolo <$> loadRenderProgramFromFiles "cpu_particle.vert" "cpu_particle.frag" "cpu_particle" Nothing
+
   (bufferP, bufferI) <- liftIO $ do
     bp <- VSM.new instCapacity
     bi <- VSM.new instCapacity
     pure (bp,bi)
   spawnQ <- liftIO $ newTQueueIO
+  tx <- yolo <$> fileTexture2D "./data/textures/vfx/pcl_blobs_4x4.png" NonResident
   pure $ CpuParticleSystem
     { _cpuParticleVertices = vtx
     , _cpuParticleIndices = idx
@@ -263,58 +292,41 @@ newCpuParticleSystem = do
     , _cpuParticleBuffer = bufferP
     , _cpuParticleInstanceBuffer = bufferI
     , _cpuParticleSpawning = spawnQ
+    , _cpuParticleTexture = tx
     }
 
-drawCpuParticleSystem :: (MonadReader env m, HasLogging env, MonadIO m) => CpuParticleSystem -> M44 Float -> M33 Float -> m ()
-drawCpuParticleSystem pcls viewProjection camBasis = do
-  glErrorToLog "drawCpuParticleSystem.enter"
-  count <- liftIO $ readIORef (_cpuParticleCount pcls)
-  when (count > 0) $ do
-    glBlendFunc GL_ONE GL_ONE
-    glEnable GL_BLEND
-    -- glDisable GL_DEPTH_MASK
-    glUseProgram $ _programObject (_cpuParticleProgram pcls)
-    glErrorToLog "drawCpuParticleSystem.bindProgram"
-    glBindBufferBase GL_SHADER_STORAGE_BUFFER 1 (_storeObject (_cpuParticleInstances pcls))
-    glErrorToLog "drawCpuParticleSystem.bindBuffer"
-    glBindVertexArray $ _cpuParticleVao pcls
-    glErrorToLog "drawCpuParticleSystem.bindVao"
-    liftIO $ do
-      with viewProjection $ glUniformMatrix4fv 0 1 GL_TRUE . castPtr
-      with camBasis $ glUniformMatrix3fv 1 1 GL_TRUE . castPtr
-    glErrorToLog "drawCpuParticleSystem.bindUniforms"
-    glDrawElementsInstanced GL_TRIANGLES (4*2*3) GL_UNSIGNED_SHORT nullPtr (fromIntegral count)
-    glErrorToLog "drawCpuParticleSystem.draw"
-    glBindVertexArray 0
-    glDisable GL_BLEND
 
 -- this is an entirely dumb setup
 -- update (and spawning) could be handled by sparking off separate threads
 -- rather than constantly resetting and overwriting a linear buffer, a circular
 -- buffer should be used and written to with GL_MAP_PERSISTENT_BIT/GL_MAP_COHERENT_BIT
-updateCpuParticleSystem :: (MonadIO m) => CpuParticleSystem -> Float -> m ()
-updateCpuParticleSystem pcls dt = liftIO $ do
+updateCpuParticleSystem :: (MonadIO m) => CpuParticleSystem -> Float -> V3 Float -> m ()
+updateCpuParticleSystem pcls dt camPos = liftIO $ do
     count <- readIORef (_cpuParticleCount pcls)
+    -- update extant particles
     live <- updateLoop (count-1) (count-1) 0
+    -- spawn new particles
     spawns <- atomically $ flushTQueue (_cpuParticleSpawning pcls)
-
     live' <- foldlM spawn live spawns
-    {-
-    live' <- case spawns of
-      Just pos -> do
-        debugPcls <- debugPclSpawn pos
-        let n = VS.length debugPcls
-            toSpawn = min n (cpuParticleMax-live)
-        flip traverse_ [0 .. toSpawn-1] $ \i -> VSM.unsafeWrite (_cpuParticleBuffer pcls) (live+i) (VS.unsafeIndex debugPcls i)
-        pure (live+toSpawn)
-      Nothing -> do
-        pure live
-        -}
+    let living = VSM.unsafeSlice 0 live' (_cpuParticleBuffer pcls)
+    VA.sortBy distToCam living
+    -- TODO: sort
+    -- copy to instances
     copyLoop 0 live'
+    -- copy to GPU buffer
+    -- TODO: circle buffer
     storageClear (_cpuParticleInstances pcls)
     _ <- VSM.unsafeWith (_cpuParticleInstanceBuffer pcls) $ unsafeStore (_cpuParticleInstances pcls) live'
+    -- update count
     writeIORef (_cpuParticleCount pcls) live'
   where
+    distToCam a b
+      | da > db = LT
+      | da < db = GT
+      | otherwise = EQ
+      where
+        da = qd (_pclPos a) camPos
+        db = qd (_pclPos b) camPos
     spawn :: Int -> PclSpawnParams -> IO Int
     spawn live sp = do
       ps <- debugPclSpawn sp

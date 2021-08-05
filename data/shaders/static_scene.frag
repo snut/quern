@@ -1,8 +1,8 @@
 #extension GL_ARB_bindless_texture : enable
 
-float saturate(float x) { return clamp(x, 0.0, 1.0); }
-vec3 saturate(vec3 x) { return clamp(x, vec3(0), vec3(1)); }
-const float pi = 3.14159;
+
+
+#include <utility.glsl>
 
 struct material {
   vec4 baseColour;
@@ -81,21 +81,6 @@ struct materialData {
   uvec2 subsurfaceEmissive;
 };
 
-// extremely accurate sRGB <-> linear conversion functions ahead
-vec3 toLinear(vec3 c) {
-  vec3 result = c;
-  result.xyz *= result.xyz;
-  return result;
-}
-vec4 toLinear(vec4 c) { return vec4( toLinear(c.xyz), c.w ); }
-
-vec3 fromLinear(vec3 c) {
-  vec3 result = c;
-  result.xyz = sqrt(result.xyz);
-  return result;
-}
-vec4 fromLinear(vec4 c) { return vec4( fromLinear(c.xyz), c.w ); }
-// end extermely accurate not-at-all a hack colour space conversion
 
 
 // Kaplanyan 2016, stable specular highlights
@@ -146,57 +131,11 @@ lightAccum makeLightAccum() {
   return result;
 }
 
-// specular model based on Unreal publication (2013)
-// https://cdn2.unrealengine.com/Resources/files/2013SiggraphPresentationsNotes-26915738.pdf
 
-// GGX/Trowbridge-Reitz
-// alpha = roughness squared
-float specD(float n_h, float alpha) {
-  float a2 = alpha * alpha;
-  float den = n_h * n_h * (a2 - 1) + 1;
-  return a2 / (pi * den * den);
-}
-
-float specG1(float n_v, float k) {
-  return n_v / (n_v * (1.0 - k) + k);
-}
-
-float specG(bool analytic, float n_v, float n_l, float roughness) {
-  float dehot = roughness + 1.0;
-  float k_anl = (dehot * dehot) * 0.25;
-  float k_ibl = (roughness * roughness);
-  float k = analytic ?  k_anl : k_ibl;
-  return specG1(n_l, k) * specG1(n_v, k);
-}
-
-float schlick(float v) {
-#if 0
-  v = 1.0 - v;
-  float v2 = v * v;
-  return v2 * v2 * v;
-#elif 0
-  return pow( 1.0 - v, 5 );
-#else // unreal approximation using a spherical gaussian expansion
-  return pow(2, (-5.55473 * v - 6.98316) * v);
-#endif
-}
-
-vec3 specF(vec3 f0, float v_h, float roughness) {
-  float fc = schlick(v_h);
-  vec3 fr = max(vec3(1.0 - roughness), f0) - f0;
-  return f0 + fr * schlick(v_h);
-  //return f0 + (vec3(1.0) - f0) * fc;
-}
-
-// cook-torrence-ish
-// https://en.wikipedia.org/wiki/Cook-Torrance#Cook%E2%80%93Torrance_model
-/*
-  k_spec = (D*F*G) / (4 * (V.N) * (N.L))
-  F = Fresnel term (Schlick's approximation)
-  D = distribution factor
-  G = geometric attenuation term
-*/
-vec3 specBRDF( surface surf, float n_l, vec3 l, vec3 v, bool analytic ) {
+vec3 surfBRDF( surface surf, float n_l, vec3 l, vec3 v, bool analytic ) {
+#if 1
+  return specBRDF(surf.mtl.roughness, surf.tbn[2], surf.specular, surf.ao3, n_l, l, v, analytic);
+#else
   vec3 n = surf.tbn[2];
   vec3 h = normalize(l + v);
 
@@ -214,23 +153,9 @@ vec3 specBRDF( surface surf, float n_l, vec3 l, vec3 v, bool analytic ) {
   float denom = 4.0 * n_l * n_v + (1.0/32.0);
   vec3 ao = surf.ao3; //(analytic ? 1.0 : surf.mtl.ao)
   return max(vec3(0), num / denom) * ao;
+#endif
 }
 
-vec3 sampleEnv(samplerCube env, float roughness, vec3 dir) {
-  /*
-    Filament (google) roughness mapping:
-      log2(roughness) + roughnessOneLOD
-    Approximation:
-      roughnessOneLOD * roughness * (2 - roughness)
-      roughnessOneLOD = 4 (16x16 with a 256 map)
-  */
-  float smoothness = saturate(1 - roughness);
-  smoothness = mix( smoothness, smoothness * smoothness, 0.5);
-  float r = 1 - smoothness;
-  float maxMip = 8;
-  float mip = saturate(r) * maxMip;
-  return textureLod( env, dir, mip ).xyz;
-}
 
 
 void lightingEnv(inout lightAccum lit, surface surf, samplerCube env, sampler2D lut, vec3 v) {
@@ -308,7 +233,7 @@ void lighting(inout lightAccum lit, surface surf, vec3 l, vec3 v, vec3 lightClr)
   //vec3 h = normalize(l + v);
   float n_l_raw =  dot(n, l);
   float n_l = saturate( n_l_raw );
-  vec3 specular = specBRDF(surf, n_l, l, v, true);
+  vec3 specular = surfBRDF(surf, n_l, l, v, true);
   vec3 diffuse = surf.albedo * (n_l) / pi;
   lit.diffuse += diffuse * lightClr;
   lit.specular += specular * lightClr;
@@ -366,12 +291,12 @@ struct clusterData {
 
 // per-view uniforms: move these to a big ol' buffer
 layout(location = 1) uniform mat4 inverseView;
+
 layout(location = 2) uniform mat4 sunlightViewProjection;
 layout(location = 3) uniform mat4 sunlightInverseView;
 
 #if PCF_SHADOWS
 layout(location = 8, binding=1) uniform sampler2DShadow sunlightShadow;
-layout(location = 9, binding=9) uniform sampler2D sunglightShadowRaw;
 #else
 layout(location = 8, binding=1) uniform sampler2D sunlightShadow;
 #endif
@@ -489,9 +414,9 @@ void main() {
   shadowNDC.xy = shadowNDC.xy * 0.5 + 0.5;
 
 #if PCF_SHADOWS // pcf with shadow sampler (comparison sampling)
-  float sampleBias1 = 1.0 / 2048.0;
-  float sampleBias0 = 1.0 / 256.0;
-  float sampleBias = mix(sampleBias0, sampleBias1, saturate(abs(dot(l_dir, surf.geoTBN[2]))));
+  //float sampleBias1 = 1.0 / 2048.0;
+  //float sampleBias0 = 1.0 / 256.0;
+  //float sampleBias = mix(sampleBias0, sampleBias1, saturate(abs(dot(l_dir, surf.geoTBN[2]))));
   #if 1 // cheap and nasty one-tap, debug
     float shadow = textureLod(sunlightShadow, shadowNDC, 0);
   #else

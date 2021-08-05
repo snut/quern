@@ -8,6 +8,7 @@ import Control.Lens
 import Data.IORef
 --import Graphics.GL.Core45
 import Graphics.GL.Types
+import Linear
 import Quern.Render.Target
 --import Quern.Render.Texture
 import Quern.Render.Shader
@@ -81,6 +82,11 @@ data StaticScene = StaticScene
   -- shadow target for sun
   , _sceneShadowTarget :: !Target
 
+  -- sunlight
+  , _sceneSunViewProjection :: !(M44 Float)
+  , _sceneSunInverseView :: !(M44 Float)
+  , _sceneSunColour :: !(V3 Float)
+
   -- for PBR shaders
   , _sceneSplitSumLUT :: !Texture
 
@@ -92,3 +98,8 @@ data StaticScene = StaticScene
   , _scenePresentProgram :: !Program
   }
 makeLenses ''StaticScene
+
+
+
+class HasStaticScene a where
+  staticScene :: Lens' a StaticScene

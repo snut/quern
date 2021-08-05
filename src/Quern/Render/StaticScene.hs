@@ -86,9 +86,6 @@ import Quern.Render.Texture
 import Quern.Render.Particles.CpuParticles
 import Quern.Types
 
-class HasStaticScene a where
-  staticScene :: Lens' a StaticScene
-
 -- some convenience functions, helping to load/create some assets
 toByte :: Float -> Word8
 toByte = truncate . (* 255) . min 1 . max 0
@@ -456,6 +453,9 @@ newStaticScene envPath resolution msaa = do
     , _sceneSsaoProgram = ssaoProg
     , _scenePresentProgram = presentProg
     , _sceneCpuParticles = cpuPcls
+    , _sceneSunViewProjection = sunlightProj !*! sunlightView
+    , _sceneSunInverseView = inv44 sunlightView
+    , _sceneSunColour = V3 6.0 5.5 5.0
     }
 
 cullPass :: (HasStaticScene env, HasLogging env) => Camera -> ScenePass -> Quern env ()
@@ -474,7 +474,7 @@ cullPass cam pass = do
         Just _ -> do
           shadowDrawCount <- liftIO $ bindForCompute'DrawStorage'Shadow (_passDraws pass)
           let shadowDispatch = fromIntegral $ (shadowDrawCount + 255) `div` 256
-              shadowVP = sunlightProj !*! sunlightView cam
+              shadowVP = _sceneSunViewProjection scene
           liftIO $ with shadowVP $ glUniformMatrix4fv 0 1 GL_TRUE . castPtr
           glUniform1ui 1 (fromIntegral shadowDrawCount)
           glUniform1ui 2 1
@@ -500,7 +500,6 @@ cullScene cam = do
 
   -- compute shader writes to indirect buffer, so I guess both are required
   glMemoryBarrier (GL_COMMAND_BARRIER_BIT .|. GL_SHADER_STORAGE_BARRIER_BIT .|. GL_ATOMIC_COUNTER_BARRIER_BIT)
-  let sp = _passShadowProgram (_sceneOpaquePass scene)
 
   cullPass cam (_scenePrePassOpaque scene)
   cullPass cam (_scenePrePassMasked scene)
@@ -577,8 +576,8 @@ makePos :: Num a => V3 a -> V4 a
 makePos (V3 x y z) = V4 x y z 1
 
 -- TODO: snap the position to projected texel centres
-sunlightViewSnapped :: Bool -> Camera -> M44 Float
-sunlightViewSnapped snap _cam = lookAt (lightAt' + V3 8 4 32) lightAt' (V3 0 0 1)
+sunlightViewSnapped :: Bool ->M44 Float
+sunlightViewSnapped snap = lookAt (lightAt' + V3 8 4 32) lightAt' (V3 0 0 1)
   where
     --lightAt = _cameraTarget cam * (V3 1 1 0)
     lightAt = V3 8 4 0
@@ -596,7 +595,7 @@ sunlightViewSnapped snap _cam = lookAt (lightAt' + V3 8 4 32) lightAt' (V3 0 0 1
     unquantise :: Int -> Float
     unquantise = (/ 256) . fromIntegral
 
-sunlightView :: Camera -> M44 Float
+sunlightView :: M44 Float
 sunlightView = sunlightViewSnapped False
 
 sunShadowPass :: (HasStaticScene env, HasLogging env) => ScenePass -> M44 Float -> Maybe (Quern env ()) -> Quern env ()
@@ -622,7 +621,7 @@ sunShadowPass pass lightVP beforeDraw = do
 
 
 sunShadowScene :: (HasStaticScene env, HasLogging env) => Float -> Camera -> Quern env (Maybe GLsync)
-sunShadowScene renderTime cam = do
+sunShadowScene renderTime _cam = do
     glErrorToLog "sunShadowScene.enter"
     scene <- view staticScene
 
@@ -631,8 +630,7 @@ sunShadowScene renderTime cam = do
     -- shadows
     let updateShadows = True
         renderShadows = True
-        lightView = sunlightView cam
-        lightVP = sunlightProj !*! lightView :: M44 Float
+        lightVP = _sceneSunViewProjection scene
         bindTime = liftIO $ with (V4 renderTime 0 0 0) $ glUniform4fv 16 1 . castPtr
 
     when (updateShadows && renderShadows) $ do
@@ -727,7 +725,7 @@ drawScene renderTime cam = do
       drawPass cam (_sceneTransparentPass scene) "transparent" (Just bindTransparents) True
       glDepthMask GL_FALSE
       drawPass cam (_sceneAdditivePass scene) "additive" Nothing False
-      drawCpuParticleSystem (_sceneCpuParticles scene) (cameraViewProjection cam) (cameraBasis cam)
+      drawCpuParticleSystem (_sceneCpuParticles scene) (cameraViewProjection cam) (cameraViewInverse cam) (cameraBasis cam)
       glDepthMask GL_TRUE
 
     -- post process, tonemap, present
@@ -777,9 +775,8 @@ bindForDraw cam bindShadows = do
   bindInstanceStorage (_sceneInstances scene)
   glErrorToLog "bindForDraw.bindStorage"
 
-  let lightView = sunlightView cam
-      lightInvView = inv44 lightView
-      lightVP = sunlightProj !*! lightView :: M44 Float
+  let lightInvView = _sceneSunInverseView scene
+      lightVP = _sceneSunViewProjection scene
       nearFar = V2 (cam^.cameraNear) (fromMaybe 0 (cam^.cameraFar))
 
   -- set up uniforms for camera matrices, environment, debug mode
@@ -913,3 +910,39 @@ reloadScenePrograms scene = do
   _ <- reloadProgram (_cpuParticleProgram $ _sceneCpuParticles scene)
   logging "Reloaded all shaders"
   pure ()
+
+--  So this can refer to static scene / hasstaticscene without an import loop
+drawCpuParticleSystem :: (MonadReader env m, HasLogging env, HasStaticScene env, MonadIO m) => CpuParticleSystem -> M44 Float -> M44 Float -> M33 Float -> m ()
+drawCpuParticleSystem pcls viewProjection inverseView camBasis = do
+  shadowBuffer <- view (staticScene.sceneShadowTarget.targetDepth)
+  shadowInvV <- view (staticScene.sceneSunInverseView)
+  shadowVP <- view (staticScene.sceneSunViewProjection)
+
+  envMap <- view (staticScene.sceneEnvCubemap)
+
+  glErrorToLog "drawCpuParticleSystem.enter"
+  count <- liftIO $ readIORef (_cpuParticleCount pcls)
+  when (count > 0) $ do
+    glBlendFunc GL_ONE GL_ONE_MINUS_SRC_ALPHA
+    glEnable GL_BLEND
+    -- glDisable GL_DEPTH_MASK
+    glUseProgram $ _programObject (_cpuParticleProgram pcls)
+    glErrorToLog "drawCpuParticleSystem.bindProgram"
+    glBindBufferBase GL_SHADER_STORAGE_BUFFER 1 (_storeObject (_cpuParticleInstances pcls))
+    glErrorToLog "drawCpuParticleSystem.bindBuffer"
+    glBindVertexArray $ _cpuParticleVao pcls
+    glErrorToLog "drawCpuParticleSystem.bindVao"
+    liftIO $ do
+      with viewProjection $ glUniformMatrix4fv 0 1 GL_TRUE . castPtr
+      with camBasis $ glUniformMatrix3fv 1 1 GL_TRUE . castPtr
+      bindTexture 0 (_cpuParticleTexture pcls)
+      traverse_ (bindTexture 1) shadowBuffer
+      bindTexture 2 envMap
+      with shadowVP   $ glUniformMatrix4fv 8 1 GL_TRUE . castPtr
+      with shadowInvV $ glUniformMatrix4fv 9 1 GL_TRUE . castPtr
+      with inverseView $ glUniformMatrix4fv 10 1 GL_TRUE . castPtr
+    glErrorToLog "drawCpuParticleSystem.bindUniforms"
+    glDrawElementsInstanced GL_TRIANGLES (4*2*3) GL_UNSIGNED_SHORT nullPtr (fromIntegral count)
+    glErrorToLog "drawCpuParticleSystem.draw"
+    glBindVertexArray 0
+    glDisable GL_BLEND

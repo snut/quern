@@ -21,6 +21,7 @@ module Quern.Render.Texture
   , makeBufferTexture
   , makeBufferTextureNonResident
   , unsafeResizeBufferTexture
+  , bindTexture
   -- * Library
   , newTextureLibrary
   , pushTextureLibrary
@@ -70,6 +71,8 @@ data Texture = Texture
 
 makeLenses ''Texture
 
+bindTexture :: MonadIO m => Int -> Texture -> m ()
+bindTexture unit tx = glBindTextureUnit (fromIntegral unit) (_textureObject tx)
 
 data TextureResidency
   = NonResident

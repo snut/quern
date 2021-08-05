@@ -49,6 +49,7 @@ data RenderState = RenderState
   , _idleAnimations :: !(Map Entity (Animation Instance))
   , _instanceAnimations :: !(Map InstanceIndex (Animation Instance, Instance))
   , _debugCamera :: !(Maybe Camera)
+  , _renderTimePaused :: !Bool
   }
 makeLenses ''RenderState
 
