@@ -30,12 +30,14 @@ import qualified Data.Vector.Algorithms.Tim as VA
 
 -- Generating useful values for particles
 
+-- | 1-dimensional bounding boxes, or intervals as sensible people might call them
 type DistRange a = AABox V1 a
 
 mkRange :: Ord a => a -> a -> DistRange a
 mkRange a b = mkAABox (V1 a) (V1 b)
 
--- don't have uniformR in this version of System.Random
+-- Don't have uniformR in this version of System.Random
+-- | Generate a value that lies within an interval
 uniformR :: (Random a, RandomGen g) => DistRange a -> g -> (a, g)
 uniformR r = randomR (mn, mx)
   where
@@ -48,14 +50,14 @@ canonicalR = mkRange 0 1
 angularR :: (Ord a, Floating a) => DistRange a
 angularR = mkRange (-pi) pi
 
+
 data V3Dist
   = SphereDist !(V3 Float) !(DistRange Float)
   | ConeDist !(V3 Float) !(DistRange Float) !(Quaternion Float) !(DistRange Float)
   deriving (Eq, Ord, Show, Read)
 
---sphereDist :: MonadState StdGen m => V3 Float -> Float -> Float -> m (V3 Float)
-
-
+-- | This might be better expressed as just passing functions around rather than
+-- using a data type. Serialisation is the concern.
 distV3 :: MonadState StdGen m => V3Dist -> m (V3 Float)
 distV3 (SphereDist centre radii) = do
   r <- state $ uniformR radii
@@ -71,8 +73,7 @@ distV3 (ConeDist centre radii rot angles) = do
       u = sqrt $ 1 - z*z
   pure $! centre + r *^ rotate rot v
 
--- defining particles
-
+-- This is a simulated particle
 data Particle = Pcl
   { _pclPos :: !(V3 Float)
   , _pclVel :: !(V3 Float)
@@ -85,7 +86,6 @@ data Particle = Pcl
   } deriving (Eq, Ord, Show)
 
 makeLenses ''Particle
-
 
 instance Storable Particle where
   sizeOf _ = 12 * 4 + 16 + 4 + 4 + 4
@@ -122,7 +122,6 @@ updateParticle dt pcl = if pcl'^.pclPos._z < 0 then pcl'&pclVel *~ bounce else p
       , _pclTtl = _pclTtl pcl - dt
       }
 
-
 -- spawning particles
 spawnParticle :: MonadState StdGen m => V3Dist -> V3Dist -> Float -> m Particle
 spawnParticle pos vel dt = do
@@ -156,6 +155,7 @@ spawnParticles gen pos dir count dt = runST $ runStateT body gen
         VSM.unsafeWrite vs i pcl
       VS.unsafeFreeze vs
 
+-- | Data type used for rendering particles on the GPU
 -- most of this can be half precision
 data PclInstance = PclInstance
   { _pclInstPos :: !(V3 Float)
@@ -308,13 +308,13 @@ updateCpuParticleSystem pcls dt camPos = liftIO $ do
     -- spawn new particles
     spawns <- atomically $ flushTQueue (_cpuParticleSpawning pcls)
     live' <- foldlM spawn live spawns
+    -- sort the live particles in-place (hence unsafeSlice)
     let living = VSM.unsafeSlice 0 live' (_cpuParticleBuffer pcls)
     VA.sortBy distToCam living
-    -- TODO: sort
     -- copy to instances
     copyLoop 0 live'
     -- copy to GPU buffer
-    -- TODO: circle buffer
+    -- TODO: circle buffer or multiple buffers
     storageClear (_cpuParticleInstances pcls)
     _ <- VSM.unsafeWith (_cpuParticleInstanceBuffer pcls) $ unsafeStore (_cpuParticleInstances pcls) live'
     -- update count
@@ -354,7 +354,17 @@ updateCpuParticleSystem pcls dt camPos = liftIO $ do
         copyLoop (i+1) n
 
 
+{-
+  rather than a simple quad, use a subdivided square with a tented middle vertex
+  this gives some nice parallax and more interesting intersections with geo, especially
+  when soft depth comparisons are used
 
+  +__+__+
+  |  |  |
+  +--X--+   
+  |  |  |
+  +--+--+
+-}
 cpuParticleVertices :: VS.Vector (V3 Float)
 cpuParticleVertices = VS.generate 9 go
   where
