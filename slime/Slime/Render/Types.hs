@@ -65,6 +65,7 @@ data RenderGameData = RenderGameData
   , _selectedEntity :: !(Maybe Entity)
   , _selectedUnit :: !(Maybe Unit)
   , _selectedItem :: !(Maybe Item)
+  , _damageText :: ![(V3 Float, V4 Word8, Float, String)]
   }
 makeLenses ''RenderGameData
 

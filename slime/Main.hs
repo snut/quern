@@ -13,9 +13,10 @@ import Data.IORef
 import Data.List (sortOn, partition)
 import Data.Map (Map)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe, isJust)
+import Data.Maybe (fromMaybe, isJust, catMaybes)
 import qualified Data.Text as T (unpack, take)
 import qualified Data.Vector  as V
+import Data.Word
 --import Graphics.GL.Core45 (glClearColor)
 import Linear as Linear hiding (E)
 import Options.Applicative
@@ -106,6 +107,19 @@ unitReport u
     yesNo True = "Yes"
     yesNo False = "No"
 
+addDamageText :: Instance -> V4 Word8 -> String -> Quern RenderContext ()
+addDamageText inst clr str = magnify gameData $ do
+  let dtxt = (inst^.instancePosition + V3 0 0 0.5, clr, 3, str)
+  dtxts <- use damageText
+  damageText .= dtxt : dtxts
+
+cameraPixel :: Camera -> V3 Float -> V2 Int
+cameraPixel cam (V3 x y z) = round <$> pixf
+  where
+    vp = cameraProjection cam !*! cameraView cam
+    V4 x' y' z' w' = vp !* (V4 x y z 1)
+    uv = V2 (x'/w') (y'/w')
+    pixf = (fromIntegral <$> _cameraViewport cam) * (uv * 0.5 + 0.5)
 
 drawGui :: Quern RenderContext ()
 drawGui = do
@@ -121,6 +135,18 @@ drawGui = do
 
     Nothing -> pure ()
 
+  cam <- getActiveCamera
+  dt <- magnify renderState (use lastDeltaTime)
+  dTxt <- magnify gameData (use damageText)
+  dTxt' <- flip traverse dTxt $ \(pos, clr, ttl, str) -> do
+    let style = defaultTextStyle{ _textStyleClrFore = clr, _textStyleSize = 0.7 }
+        px = cameraPixel cam pos
+    addStringStyled rt px style str
+    if ttl > dt
+      then pure $ Just (pos + V3 0 0 (dt * 1.5), clr, ttl - dt, str)
+      else pure Nothing
+  magnify gameData (damageText .= catMaybes dTxt')
+  -- debug stuff
   drawDebugGui
   drawText rt
 
@@ -140,6 +166,12 @@ modeDesc = M.fromList
   , (11, "Ambient Occlusion")
   ]
 
+getActiveCamera :: Quern RenderContext Camera
+getActiveCamera = magnify renderState $ do
+  c <- use camera
+  dc <- use debugCamera
+  pure $! maybe c id dc
+
 drawDebugGui :: Quern RenderContext ()
 drawDebugGui = do
   rt <- view (renderGui.renderText)
@@ -149,6 +181,9 @@ drawDebugGui = do
     p <- use renderTimePaused
     pure (maybe c id dc, isJust dc, p)
   --addGuiBox :: (MonadIO m) => RenderText -> AABox V2 Int -> Int -> Int -> V4 Word8 -> V4 Word8 -> m ()
+
+
+
 
   when usingDebugCamera $ do
     let dbgMode = _cameraDebugMode cam
@@ -375,11 +410,11 @@ handleCommand (Killed e atker) = do
       addStaticAnim idx inst (dieAnim `after` idAnimation (0.3 * 0.25))
       magnify gameData (entityMap . at e .= Nothing)
     Nothing -> pure ()
-handleCommand (HitWithDamage e _ atk) = do
+handleCommand (HitWithDamage e amnt atk) = do
   ents <- _entityMap <$> mutGet gameData
   case M.lookup e ents of
     Just (RI _ to) -> do
-
+      addDamageText to (V4 0xff 0x20 0x00 0xff) (show amnt <> "!")
       case M.lookup atk ents of
         Just (RI _ from) -> do
           enqueuePclSpawn' (to^.instancePosition + V3 0 0 1, V3 0 0 1.5 + to^.instancePosition - from^.instancePosition, 64)
@@ -390,7 +425,8 @@ handleCommand (HitWithDamage e _ atk) = do
 handleCommand (Missed dfd atk) = do
   ents <- _entityMap <$> mutGet gameData
   case M.lookup dfd ents of
-    Just (RI _ to) ->
+    Just (RI _ to) -> do
+      addDamageText to (V4 0x20 0xff 0x50 0xff) "Miss"
       case M.lookup atk ents of
         Just (RI _ from) -> do
           addAnim atk (attackAnim from to)
@@ -547,7 +583,7 @@ renderInitContext window0 slib lvl msaa = do
                               , _debugCamera = Nothing
                               , _renderTimePaused = False
                               }
-  ents <- liftIO $ newIORef (RenderGameData mempty mempty Nothing Nothing Nothing)
+  ents <- liftIO $ newIORef (RenderGameData mempty mempty Nothing Nothing Nothing [])
   guiProg <- either error id <$> loadKernelFromFile "data/shaders/sdf2d.comp"
   gthread <- startGameLoop lvl 0xbeef
   let gui = GuiContext guiProg
