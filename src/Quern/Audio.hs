@@ -26,8 +26,8 @@ import Control.Monad.Reader.Class
 import Control.Lens (Traversal', lens, preview)
 import SDL.Mixer as Mixer
 import SDL.Init as SDL
-import qualified Data.Map as M
-import Data.Map (Map)
+import qualified Data.Map.Strict as M
+import Data.Map.Strict (Map)
 --import Quern.Types
 -- -------------------------------------------------------
 -- TODO: Refactor into a bunch of (MonadReader env m, MonadIO m, HasAudioContext env) type of dealies

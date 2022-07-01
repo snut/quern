@@ -61,6 +61,18 @@ createTangents verts tris = runST $ do
   bs' <- VS.unsafeFreeze bs
   pure (ts', bs')
 
+createNormals :: VS.Vector (V3 Float) -> VS.Vector (V3 Word32) -> VS.Vector (V3 Float)
+createNormals positions tris = runST $ do
+  ns <- VSM.replicate (VS.length positions) 0
+  VS.forM_ tris $ \tri -> do
+    let itri = fromIntegral <$> tri
+        V3 va vb vc = (positions VS.!) <$> itri
+        n = (vb - va) `cross` (vc - va)
+    traverse_ (VSM.modify ns (+ n)) itri
+  mapM_ (VSM.modify ns normalize) [0 .. VS.length positions - 1]
+  VS.unsafeFreeze ns
+
+
 convertToStatic :: VS.Vector ObjVertex -> VS.Vector (V3 Word32) -> VS.Vector StaticVertex
 convertToStatic vertices indices = VS.imap go vertices
   where

@@ -19,7 +19,7 @@ import Quern.Render.Camera
 import Quern.Render.StaticScene
 import Quern.Render.Texture (TextureLibrary, HasTextureLibrary(..))
 import Quern.Render.Shader (Program)
-import Data.Map (Map)
+import Data.Map.Strict (Map)
 import Slime.Game.Types
 import Quern.Audio
 import Quern.Render.Text

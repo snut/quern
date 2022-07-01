@@ -15,6 +15,7 @@ module Quern.Input
   , initInput
   , updateInput
   , buttonHeld
+  , anyButtonsHeld
   , buttonUp
   , buttonDown
   , consumeButton
@@ -29,6 +30,7 @@ import Control.Lens
 import Control.Monad.IO.Class
 import Data.Foldable (foldl')
 import Data.Set (Set, member, insert, delete)
+import qualified Data.Set as S
 import Data.StateVar (get)
 import Linear
 import Linear.Affine (Point(..))
@@ -131,6 +133,9 @@ instance Ord a => Monoid (Buttons a) where
 
 buttonHeld :: Ord a => a -> Buttons a -> Bool
 buttonHeld button = member button . _buttonsHeld
+
+anyButtonsHeld :: Ord a => [a] -> Buttons a -> Bool
+anyButtonsHeld buttons = not . S.null . S.intersection (S.fromList buttons) . _buttonsHeld
 
 buttonUp :: Ord a => a -> Buttons a -> Bool
 buttonUp button = member button . _buttonsUp

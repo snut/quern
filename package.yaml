@@ -34,6 +34,7 @@ dependencies:
 - free
 - GenericPretty # for debug pretty printing
 - gl
+- gltf-codec
 # sdl2 incurs a dependency on the OpenGL package, which depends on OpenGLRaw
 # it's a little weird to have two independant versions of OpenGL wrappers in the deps
 # but I kind of prefer `gl` ergonomically

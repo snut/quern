@@ -16,8 +16,8 @@ import Control.Monad (when, forM)
 import Control.Monad.IO.Class
 import Data.Int
 import Data.IORef
-import Data.Map (Map)
-import qualified Data.Map as M
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import qualified Data.Text as T (Text)
 import qualified Data.Vector.Storable as VS
 --import qualified Data.Vector.Storable.Mutable as VSM

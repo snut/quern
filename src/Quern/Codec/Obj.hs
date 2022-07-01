@@ -25,7 +25,7 @@ import qualified Data.Vector.Storable as VS
 import qualified Data.Vector.Storable.Mutable as VSM
 
 
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import Data.IORef
 import Foreign
 import Numeric.Half

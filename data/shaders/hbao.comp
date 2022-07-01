@@ -18,9 +18,9 @@ layout(location = 17) uniform vec2 zNearFar = vec2(0.01, 100);
 // convert a value in clip space [-1..1] to a view-space position at 1 unit z
 layout(location = 18) uniform vec2 clipToView;
 
-
-vec2 rcpRes = vec2(1920.0, 1080.0);
-vec2 aoRes = vec2(1.0/1920.0, 1.0/1080.0);
+// these are initialised from the actual image dimensions in main
+vec2 rcpRes = vec2(1.0, 1.0);
+vec2 aoRes = vec2(1.0, 1.0);
 
 float linearDepth(float  ndcZ) {
 #if 1
@@ -95,8 +95,10 @@ const float r = 0.25;
 const float r2 = r*r;
 const float negRcpR2 = -1.0 / r2;
 const float maxRadiusPx = 32;
-const int directionCount = 6;
-const int sampleCount = 4;
+// original implementation used 6 directions and 4 taps
+// need to actually time this pass and see how much can be spared here
+const int directionCount = 7;
+const int sampleCount = 7;
 const float aoStrength = 1.9;
 
 float tanToSin(float x) { return x * inversesqrt(x*x + 1.0); }

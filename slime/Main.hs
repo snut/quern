@@ -11,8 +11,8 @@ import Data.Aeson hiding ((.=))
 import Data.Foldable ()
 import Data.IORef
 import Data.List (sortOn, partition)
-import Data.Map (Map)
-import qualified Data.Map as M
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as M
 import Data.Maybe (fromMaybe, isJust, catMaybes)
 import qualified Data.Text as T (unpack, take)
 import qualified Data.Vector  as V
@@ -189,7 +189,7 @@ drawDebugGui = do
     let dbgMode = _cameraDebugMode cam
     addString rt (V2 24 32) 0.5 (show (_cameraPosition cam) <> "  [P]")
     addString rt (V2 24 64) 0.5 $ "Mode " <> show dbgMode <> ": " <> maybe "Unknown" id (M.lookup dbgMode modeDesc)
-    addString rt (V2 24 96) 0.5 $ "F1: reset mode, F2/F3: +/- mode, F4: reload shaders"
+    addString rt (V2 24 96) 0.5 $ "F1: reset mode, F2/F3: +/- mode, F4: wire, F5: reload shaders"
 
     when paused $
       addString rt (V2 24 128) 0.5 $ "PAUSED"
@@ -507,6 +507,7 @@ debugVisModes ip cam
   | buttonUp KeycodeF1 kb = cam & cameraDebugMode .~ 0
   | buttonUp KeycodeF2 kb = cam & cameraDebugMode %~ ((`mod` modes) . succ)
   | buttonUp KeycodeF3 kb = cam & cameraDebugMode %~ ((`mod` modes) . (+ pred modes))
+  | buttonUp KeycodeF4 kb = cam & cameraDebugWire %~ not
   | otherwise = cam
   where
     kb = ip^.inputKeyboard.keyboardButtons
@@ -517,7 +518,7 @@ updateDebugCamera c dt = do
   rs <- mutGet renderState
   _ <- updateCameraMouseCapture (rs^.input)
   let c' = updateCameraMotion dt (rs^.input) (debugVisModes (rs^.input) c)
-  when (buttonUp KeycodeF4 (rs^.input.inputKeyboard.keyboardButtons))
+  when (buttonUp KeycodeF5 (rs^.input.inputKeyboard.keyboardButtons))
     (view scene >>= reloadScenePrograms)
   magnify renderState $ debugCamera .= Just c'
 

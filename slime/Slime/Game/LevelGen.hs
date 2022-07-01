@@ -14,7 +14,7 @@ import qualified System.Random as R
 import Slime.Game.Types
 
 import Data.Bifunctor
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as VM
 

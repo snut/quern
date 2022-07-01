@@ -10,6 +10,8 @@ module Quern.Util
   , halton
   , gaussian
   , gaussianKernel
+  , unitToOct
+  , octToUnit
   -- * File handle wrapping
   , toFileHandle
 
@@ -111,3 +113,70 @@ gaussianKernel n | n > 0 = nrm $ VS.generate n gen
     sigma = fromIntegral n / 6
     gen i = gaussian sigma $ fromIntegral i - hlf
 gaussianKernel _ = mempty
+
+signum0 :: (Num a, Ord a) => a -> a
+signum0 x
+  | x >= 0 = 1
+  | otherwise = -1
+
+-- | Encode a normal vector as an octahedral representation
+unitToOct :: V3 Float -> V2 Float
+unitToOct v@(V3 x y z)
+  | z > 0 = r
+  | otherwise = r'
+  where
+    r@(V2 rx ry) = V2 x y ^/ (1 `dot` abs v)
+    r' = flipR * signum0 (V2 x y)
+    flipR = 1 - abs (V2 ry rx)
+
+-- | Decode a normal vector from octahedral representation
+octToUnit :: V2 Float -> V3 Float
+octToUnit v@(V2 x y)
+  | nz >= 0 = normalize n
+  | otherwise = normalize $ V3 nx ny nz
+  where
+    n@(V3 _ _ nz) = V3 x y (1 - (1 `dot` abs v))
+    (V2 nx ny) = flipN_xy * signum0 (V2 x y)
+    flipN_xy = 1.0 - abs (V2 y x)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+--

@@ -29,7 +29,7 @@ import Data.Aeson hiding ((.=))
 import qualified Data.ByteString.Lazy as B
 import Data.Foldable (traverse_)
 import Data.IORef
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
 import Linear hiding (unit, trace)
 import Tiles.Hex

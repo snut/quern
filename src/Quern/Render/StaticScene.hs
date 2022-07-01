@@ -53,7 +53,7 @@ import Data.Foldable (traverse_)
 import Data.IORef
 import qualified Data.Text as T
 import qualified Data.HashMap.Strict as HM (HashMap, lookup, fromList, toList)
-import qualified Data.Map as M (toList)
+import qualified Data.Map.Strict as M (toList)
 import Data.Maybe (catMaybes, fromMaybe)
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable as VS
@@ -68,6 +68,7 @@ import System.FilePath.Posix (takeFileName, takeExtension)
 import Quern.Codec.Mtl (parseMtlFile, MaterialEx(..))
 import Quern.Codec.Obj (parseObjFile, ObjMesh(..))
 import Quern.Codec.FBX (fromFBXMeshFile, FBXMesh(..))
+import Quern.Codec.Gltf (fromGltfFile, GltfMesh(..))
 import Quern.Codec.SliMesh
 import Quern.Compute.FrustumCulling
 import Quern.Compute.PanoramaToCube
@@ -178,6 +179,7 @@ loadMesh meshPath = case toLower <$> takeExtension meshPath of
   ".obj" -> loadObjMesh meshPath
   ".fbx" -> loadFbxMesh meshPath
   ".qmesh" -> loadSliMesh meshPath
+  ".glb" -> loadGlTFMesh meshPath
   "" -> do
     let sliMesh = meshPath <> ".qmesh"
     x <- liftIO $ doesFileExist sliMesh
@@ -190,6 +192,8 @@ loadMesh meshPath = case toLower <$> takeExtension meshPath of
           then loadFbxMesh fbxMesh
           else loadObjMesh (meshPath <> ".obj")
   _ -> loggingString ("Failed to load (unrecognised mesh extension): " <> meshPath) *> pure []
+
+
 
 loadObjMesh :: (MonadIO m, MonadReader env m, HasLogging env, HasStaticScene env, HasTextureLibrary env)
                      => FilePath -> m [MeshSlice]
@@ -258,6 +262,23 @@ loadFbxMesh meshPath = do
           meshes <- storeMeshes store meshPath (_fbxMeshVertices mesh) [(_fbxMeshName mesh, mtlIx, Opaque, _fbxMeshIndices mesh)]
           pure . fmap snd . catMaybes $ meshes
 
+loadGlTFMesh :: (MonadIO m, MonadReader env m, HasLogging env, HasStaticScene env, HasTextureLibrary env)
+             => FilePath -> m [MeshSlice]
+loadGlTFMesh meshPath = do
+  store <- view (staticScene . sceneMeshes)
+  preLoaded <- fetchMeshSlices store meshPath
+  case preLoaded of
+    Just result -> pure $! snd <$> result
+    Nothing -> do
+      meshM <- liftIO $ fromGltfFile meshPath
+      case meshM of
+        Left err -> loggingString ("Failed to load " <> meshPath) *> pure []
+        Right meshes -> do
+          let mesh = V.head meshes
+          mtlIx <- loadMaterialFallback "*gltf.temp.material" fbxMtl
+          let sections = V.toList . V.imap (\i ixs -> (show i, mtlIx, Opaque, ixs)) $ _gltfMeshIndices mesh
+          meshes <- storeMeshes store meshPath (_gltfMeshVertices mesh) sections
+          pure . fmap snd . catMaybes $ meshes
 
 
 mtlLibToMtls :: (MonadIO m, MonadReader env m, HasLogging env, HasStaticScene env, HasTextureLibrary env)
@@ -689,9 +710,13 @@ drawScene renderTime cam = do
     -- ssao needs to be done by now
     glMemoryBarrier (GL_TEXTURE_FETCH_BARRIER_BIT .|. GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
+    -- pick fill mode
+    let wire = if _cameraDebugWire cam then GL_LINE else GL_FILL
+
     -- capture opaques to main scene
     captureToTarget sceneTarget $ \_sz -> do
       -- clear colour, disable depth write because pre-pass fills the buffer
+      glPolygonMode GL_FRONT_AND_BACK wire
       glClear $ GL_COLOR_BUFFER_BIT
       glDepthMask GL_FALSE
       drawPass cam (_sceneOpaquePass scene) "opaque" (Just bindSsao) True
@@ -704,6 +729,7 @@ drawScene renderTime cam = do
     -- this can be done anywhere before transparent rendering
     let renderTranspBackface = True
     when renderTranspBackface $ do
+      glPolygonMode GL_FRONT_AND_BACK GL_FILL
       captureToTarget backTarget $ \_ -> do
         glClear $ GL_COLOR_BUFFER_BIT .|. GL_DEPTH_BUFFER_BIT .|. GL_STENCIL_BUFFER_BIT
         glCullFace GL_FRONT
@@ -722,7 +748,9 @@ drawScene renderTime cam = do
           glUniform1i backfaceLoc 4
 
     captureToTarget sceneTarget $ \_ -> do
+      glPolygonMode GL_FRONT_AND_BACK wire
       drawPass cam (_sceneTransparentPass scene) "transparent" (Just bindTransparents) True
+      glPolygonMode GL_FRONT_AND_BACK GL_FILL
       glDepthMask GL_FALSE
       drawPass cam (_sceneAdditivePass scene) "additive" Nothing False
       drawCpuParticleSystem (_sceneCpuParticles scene) (cameraViewProjection cam) (cameraViewInverse cam) (cameraBasis cam)

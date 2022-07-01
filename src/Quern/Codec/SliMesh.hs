@@ -10,7 +10,7 @@ module Quern.Codec.SliMesh
 
 import Control.Monad.IO.Class
 
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 import qualified Data.Vector.Storable as VS
 import qualified Data.Vector as V
 import Data.Word
